@@ -5,11 +5,7 @@ import com.catalis.transactionalengine.annotations.SagaStep;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -32,7 +28,8 @@ public final class SagaResult {
             long latencyMs,
             Object result,
             Throwable error,
-            boolean compensated
+            boolean compensated,
+            Instant startedAt
     ) {}
 
     private SagaResult(
@@ -65,6 +62,28 @@ public final class SagaResult {
     public Map<String, String> headers() { return headers; }
     public Map<String, StepOutcome> steps() { return steps; }
 
+    // Helpers
+    public Optional<String> firstErrorStepId() {
+        return steps.entrySet().stream()
+                .filter(e -> e.getValue().error() != null || StepStatus.FAILED.equals(e.getValue().status()))
+                .map(Map.Entry::getKey)
+                .findFirst();
+    }
+
+    public java.util.List<String> failedSteps() {
+        return steps.entrySet().stream()
+                .filter(e -> e.getValue().error() != null || StepStatus.FAILED.equals(e.getValue().status()))
+                .map(Map.Entry::getKey)
+                .toList();
+    }
+
+    public java.util.List<String> compensatedSteps() {
+        return steps.entrySet().stream()
+                .filter(e -> e.getValue().compensated())
+                .map(Map.Entry::getKey)
+                .toList();
+    }
+
     // Typed accessors by step id
     @SuppressWarnings("unchecked")
     public <T> Optional<T> resultOf(String stepId, Class<T> type) {
@@ -90,7 +109,10 @@ public final class SagaResult {
         return ann.id();
     }
 
-    /** Build a SagaResult snapshot from context and engine-provided details. */
+    /** Build a SagaResult snapshot from context and engine-provided details.
+     * Includes all steps known by status in the context (may have null results).
+     * Prefer using the overload that accepts allStepIds to preserve declaration order across runs.
+     */
     public static SagaResult from(
             String sagaName,
             SagaContext ctx,
@@ -99,8 +121,7 @@ public final class SagaResult {
     ) {
         Instant started = ctx.startedAt();
         Instant completed = Instant.now();
-        // Use step results keys to preserve insertion order where possible
-        Map<String, StepOutcome> stepMap = ctx.stepResultsView().keySet().stream()
+        Map<String, StepOutcome> stepMap = ctx.stepStatusesView().keySet().stream()
                 .collect(Collectors.toMap(
                         k -> k,
                         k -> new StepOutcome(
@@ -109,11 +130,48 @@ public final class SagaResult {
                                 ctx.getLatency(k),
                                 ctx.getResult(k),
                                 stepErrors.get(k),
-                                Boolean.TRUE.equals(compensatedFlags.get(k))
+                                Boolean.TRUE.equals(compensatedFlags.get(k)),
+                                ctx.getStepStartedAt(k)
                         ),
                         (a, b) -> a,
                         LinkedHashMap::new
                 ));
+        boolean success = stepErrors.isEmpty();
+        Throwable primary = success ? null : stepErrors.values().stream().findFirst().orElse(null);
+        return new SagaResult(
+                sagaName,
+                ctx.correlationId(),
+                started,
+                completed,
+                success,
+                primary,
+                Collections.unmodifiableMap(new LinkedHashMap<>(ctx.headers())),
+                Collections.unmodifiableMap(stepMap)
+        );
+    }
+
+    /** Build a SagaResult snapshot including all known step ids (even if they produced no result). */
+    public static SagaResult from(
+            String sagaName,
+            SagaContext ctx,
+            Map<String, Boolean> compensatedFlags,
+            Map<String, Throwable> stepErrors,
+            java.util.Collection<String> allStepIds
+    ) {
+        Instant started = ctx.startedAt();
+        Instant completed = Instant.now();
+        LinkedHashMap<String, StepOutcome> stepMap = new LinkedHashMap<>();
+        for (String k : allStepIds) {
+            stepMap.put(k, new StepOutcome(
+                    ctx.getStatus(k),
+                    ctx.getAttempts(k),
+                    ctx.getLatency(k),
+                    ctx.getResult(k),
+                    stepErrors.get(k),
+                    Boolean.TRUE.equals(compensatedFlags.get(k)),
+                    ctx.getStepStartedAt(k)
+            ));
+        }
         boolean success = stepErrors.isEmpty();
         Throwable primary = success ? null : stepErrors.values().stream().findFirst().orElse(null);
         return new SagaResult(

@@ -62,6 +62,25 @@ public final class StepInputs {
         return Collections.unmodifiableMap(all);
     }
 
+    /**
+     * Force materialization of all present resolvers and return an immutable map of inputs.
+     * This is useful when the caller wants deterministic input capture up-front (e.g., for audit).
+     */
+    public Map<String, Object> materializeAll(SagaContext ctx) {
+        Objects.requireNonNull(ctx, "ctx");
+        for (Map.Entry<String, StepInputResolver> e : resolvers.entrySet()) {
+            String id = e.getKey();
+            if (!cache.containsKey(id)) {
+                Object resolved = e.getValue().resolve(ctx);
+                if (resolved != null) cache.put(id, resolved);
+            }
+        }
+        Map<String, Object> all = new LinkedHashMap<>(values.size() + cache.size());
+        all.putAll(values);
+        all.putAll(cache);
+        return Collections.unmodifiableMap(all);
+    }
+
     public static final class Builder {
         private final Map<String, Object> values = new LinkedHashMap<>();
         private final Map<String, StepInputResolver> resolvers = new LinkedHashMap<>();

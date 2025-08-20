@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * Holds per-execution data such as:
  * - Correlation id (UUID by default) and outbound headers to propagate (e.g., user id).
- * - Step results, statuses, attempts, and latencies.
+ * - Step results, statuses, attempts, latencies, and per-step start timestamps.
  * - A set of idempotency keys used to skip steps within the same run when configured.
  *
  * Thread-safe for concurrent updates from steps executing in the same layer.
@@ -25,6 +25,7 @@ public class SagaContext {
     private final Map<String, StepStatus> stepStatuses = new ConcurrentHashMap<>();
     private final Map<String, Integer> stepAttempts = new ConcurrentHashMap<>();
     private final Map<String, Long> stepLatenciesMs = new ConcurrentHashMap<>();
+    private final Map<String, Instant> stepStartedAt = new ConcurrentHashMap<>();
     private final Set<String> idempotencyKeys = ConcurrentHashMap.newKeySet();
     private final Instant startedAt = Instant.now();
 
@@ -82,6 +83,14 @@ public class SagaContext {
         return stepLatenciesMs.getOrDefault(stepId, 0L);
     }
 
+    public void markStepStarted(String stepId, Instant when) {
+        if (when != null) stepStartedAt.put(stepId, when);
+    }
+
+    public Instant getStepStartedAt(String stepId) {
+        return stepStartedAt.get(stepId);
+    }
+
     public boolean markIdempotent(String key) {
         return idempotencyKeys.add(key);
     }
@@ -96,5 +105,21 @@ public class SagaContext {
 
     public Map<String, Object> stepResultsView() {
         return Collections.unmodifiableMap(stepResults);
+    }
+
+    public Map<String, StepStatus> stepStatusesView() {
+        return Collections.unmodifiableMap(stepStatuses);
+    }
+
+    public Map<String, Integer> stepAttemptsView() {
+        return Collections.unmodifiableMap(stepAttempts);
+    }
+
+    public Map<String, Long> stepLatenciesView() {
+        return Collections.unmodifiableMap(stepLatenciesMs);
+    }
+
+    public Map<String, Instant> stepStartedAtView() {
+        return Collections.unmodifiableMap(stepStartedAt);
     }
 }

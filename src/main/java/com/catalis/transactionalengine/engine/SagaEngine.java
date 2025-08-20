@@ -15,9 +15,11 @@ import reactor.core.publisher.Mono;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 /**
@@ -33,10 +35,16 @@ import java.util.stream.Collectors;
  * - Emit lifecycle events to {@link com.catalis.transactionalengine.observability.SagaEvents} for observability.
  */
 public class SagaEngine {
+
+    public enum CompensationPolicy {
+        STRICT_SEQUENTIAL,
+        GROUPED_PARALLEL
+    }
     private static final Logger log = LoggerFactory.getLogger(SagaEngine.class);
 
     private final SagaRegistry registry;
     private final SagaEvents events;
+    private final CompensationPolicy policy;
 
     /**
          * Create a new SagaEngine.
@@ -44,8 +52,16 @@ public class SagaEngine {
          * @param events observability sink receiving lifecycle notifications
          */
         public SagaEngine(SagaRegistry registry, SagaEvents events) {
+        this(registry, events, CompensationPolicy.STRICT_SEQUENTIAL);
+    }
+
+    /**
+     * Create a new SagaEngine with a specific compensation policy.
+     */
+    public SagaEngine(SagaRegistry registry, SagaEvents events, CompensationPolicy policy) {
         this.registry = registry;
         this.events = events;
+        this.policy = policy != null ? policy : CompensationPolicy.STRICT_SEQUENTIAL;
     }
 
     /**
@@ -86,6 +102,7 @@ public class SagaEngine {
         String sagaName = saga.name;
         String sagaId = ctx.correlationId();
         events.onStart(sagaName, sagaId);
+        events.onStart(sagaName, sagaId, ctx);
 
         // Build layers using indegree
         List<List<String>> layers = buildLayers(saga);
@@ -140,6 +157,7 @@ public class SagaEngine {
         String sagaName = saga.name;
         String sagaId = ctx.correlationId();
         events.onStart(sagaName, sagaId);
+        events.onStart(sagaName, sagaId, ctx);
 
         // Build layers using indegree
         List<List<String>> layers = buildLayers(saga);
@@ -184,12 +202,37 @@ public class SagaEngine {
         return execute(saga, inputs, ctx);
     }
 
+    /** Transitional convenience: allow Map-based inputs; prefer StepInputs DSL. */
+    @Deprecated
+    public Mono<SagaResult> execute(String sagaName, Map<String, Object> stepInputs, SagaContext ctx) {
+        Objects.requireNonNull(sagaName, "sagaName");
+        Objects.requireNonNull(ctx, "ctx");
+        StepInputs.Builder b = StepInputs.builder();
+        if (stepInputs != null) {
+            stepInputs.forEach(b::forStepId);
+        }
+        return execute(sagaName, b.build(), ctx);
+    }
+
+    /** Transitional convenience: allow Map-based inputs; prefer StepInputs DSL. */
+    @Deprecated
+    public Mono<SagaResult> execute(SagaDefinition saga, Map<String, Object> stepInputs, SagaContext ctx) {
+        Objects.requireNonNull(saga, "saga");
+        Objects.requireNonNull(ctx, "ctx");
+        StepInputs.Builder b = StepInputs.builder();
+        if (stepInputs != null) {
+            stepInputs.forEach(b::forStepId);
+        }
+        return execute(saga, b.build(), ctx);
+    }
+
     public Mono<SagaResult> execute(SagaDefinition saga, StepInputs inputs, SagaContext ctx) {
         Objects.requireNonNull(saga, "saga");
         Objects.requireNonNull(ctx, "ctx");
         String sagaName = saga.name;
         String sagaId = ctx.correlationId();
         events.onStart(sagaName, sagaId);
+        events.onStart(sagaName, sagaId, ctx);
 
         List<List<String>> layers = buildLayers(saga);
         List<String> completionOrder = Collections.synchronizedList(new ArrayList<>());
@@ -211,7 +254,7 @@ public class SagaEngine {
                     boolean success = !failed.get();
                     events.onCompleted(sagaName, sagaId, success);
                     if (success) {
-                        return Mono.just(SagaResult.from(sagaName, ctx, compensated, stepErrors));
+                        return Mono.just(SagaResult.from(sagaName, ctx, compensated, stepErrors, saga.steps.keySet()));
                     }
                     Map<String, Object> materialized = inputs != null ? inputs.materializedView(ctx) : Map.of();
                     return compensate(sagaName, saga, completionOrder, materialized, ctx)
@@ -222,7 +265,7 @@ public class SagaEngine {
                                         compensated.put(id, true);
                                     }
                                 }
-                                return Mono.just(SagaResult.from(sagaName, ctx, compensated, stepErrors));
+                                return Mono.just(SagaResult.from(sagaName, ctx, compensated, stepErrors, saga.steps.keySet()));
                             }));
                 }));
     }
@@ -233,8 +276,9 @@ public class SagaEngine {
          * No cycle detection here (validated in registry). Order inside a layer is not guaranteed.
          */
         private List<List<String>> buildLayers(SagaDefinition saga) {
-        Map<String, Integer> indegree = new HashMap<>();
-        Map<String, List<String>> adj = new HashMap<>();
+        // Use LinkedHashMap to preserve deterministic iteration order based on saga.steps insertion
+        Map<String, Integer> indegree = new LinkedHashMap<>();
+        Map<String, List<String>> adj = new LinkedHashMap<>();
         for (String id : saga.steps.keySet()) {
             indegree.putIfAbsent(id, 0);
             adj.putIfAbsent(id, new ArrayList<>());
@@ -247,7 +291,10 @@ public class SagaEngine {
         }
         List<List<String>> layers = new ArrayList<>();
         Queue<String> q = new ArrayDeque<>();
-        for (Map.Entry<String,Integer> e : indegree.entrySet()) if (e.getValue() == 0) q.add(e.getKey());
+        // Fill initial queue in the exact order of saga.steps keys for determinism
+        for (String id : saga.steps.keySet()) {
+            if (indegree.get(id) == 0) q.add(id);
+        }
         while (!q.isEmpty()) {
             int size = q.size();
             List<String> layer = new ArrayList<>(size);
@@ -267,7 +314,7 @@ public class SagaEngine {
 /**
      * Execute a single step according to its configuration.
      * - Honors per-run idempotency using {@link SagaContext#markIdempotent(String)} if an idempotencyKey was provided.
-     * - Applies retry with backoff and timeout via {@link #attemptCall(Object, Method, Method, Object, SagaContext, long, int, long, String)}.
+     * - Applies retry with backoff, optional jitter, and timeout via the attemptCall/attemptCallHandler helpers.
      * - Updates status, attempts and latency on the {@link SagaContext} and emits step success/failure events.
      */
     private Mono<Void> executeStep(String sagaName,
@@ -284,20 +331,23 @@ public class SagaEngine {
                 log.debug("[sagaId={}] [stepId={}] Skipping due to idempotency key present", ctx.correlationId(), stepId);
                 // Mark as done to reflect that the business effect was already applied in this run
                 ctx.setStatus(stepId, StepStatus.DONE);
+                events.onStepSkippedIdempotent(sagaName, ctx.correlationId(), stepId);
                 return Mono.empty();
             }
             ctx.markIdempotent(sd.idempotencyKey);
         }
 
         ctx.setStatus(stepId, StepStatus.RUNNING);
+        ctx.markStepStarted(stepId, Instant.now());
+        events.onStepStarted(sagaName, ctx.correlationId(), stepId);
         final long start = System.currentTimeMillis();
 
         Mono<Object> execution;
         if (sd.handler != null) {
-            execution = attemptCallHandler(sd, input, ctx, sd.timeoutMs, sd.retry, sd.backoffMs, stepId);
+            execution = attemptCallHandler(sd, input, ctx, sd.timeoutMs, sd.retry, sd.backoffMs, sd.jitter, sd.jitterFactor, stepId);
         } else {
             Method invokeMethod = sd.stepInvocationMethod != null ? sd.stepInvocationMethod : sd.stepMethod;
-            execution = attemptCall(saga.bean, invokeMethod, sd.stepMethod, input, ctx, sd.timeoutMs, sd.retry, sd.backoffMs, stepId);
+            execution = attemptCall(saga.bean, invokeMethod, sd.stepMethod, input, ctx, sd.timeoutMs, sd.retry, sd.backoffMs, sd.jitter, sd.jitterFactor, stepId);
         }
         return execution
                 .doOnNext(res -> ctx.putResult(stepId, res))
@@ -331,17 +381,28 @@ public class SagaEngine {
      * @param stepId            step identifier for attempts bookkeeping
      */
     private Mono<Object> attemptCall(Object bean, Method invocationMethod, Method annotationSource, Object input, SagaContext ctx,
-                                     long timeoutMs, int retry, long backoffMs, String stepId) {
+                                     long timeoutMs, int retry, long backoffMs, boolean jitter, double jitterFactor, String stepId) {
         return Mono.defer(() -> invokeMono(bean, invocationMethod, annotationSource, input, ctx))
                 .transform(m -> timeoutMs > 0 ? m.timeout(Duration.ofMillis(timeoutMs)) : m)
                 .onErrorResume(err -> {
                     if (retry > 0) {
-                        return Mono.delay(Duration.ofMillis(Math.max(0, backoffMs)))
-                                .then(attemptCall(bean, invocationMethod, annotationSource, input, ctx, timeoutMs, retry - 1, backoffMs, stepId));
+                        long delay = computeDelay(backoffMs, jitter, jitterFactor);
+                        return Mono.delay(Duration.ofMillis(Math.max(0, delay)))
+                                .then(attemptCall(bean, invocationMethod, annotationSource, input, ctx, timeoutMs, retry - 1, backoffMs, jitter, jitterFactor, stepId));
                     }
                     return Mono.error(err);
                 })
                 .doFirst(() -> ctx.incrementAttempts(stepId));
+    }
+
+    private long computeDelay(long backoffMs, boolean jitter, double jitterFactor) {
+        if (backoffMs <= 0) return 0L;
+        if (!jitter) return backoffMs;
+        double f = Math.max(0.0d, Math.min(jitterFactor, 1.0d));
+        double min = backoffMs * (1.0d - f);
+        double max = backoffMs * (1.0d + f);
+        long v = Math.round(ThreadLocalRandom.current().nextDouble(min, max));
+        return Math.max(0L, v);
     }
 
     /**
@@ -349,7 +410,7 @@ public class SagaEngine {
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
     private Mono<Object> attemptCallHandler(StepDefinition sd, Object input, SagaContext ctx,
-                                            long timeoutMs, int retry, long backoffMs, String stepId) {
+                                            long timeoutMs, int retry, long backoffMs, boolean jitter, double jitterFactor, String stepId) {
         Mono<Object> base = Mono.defer(() -> {
             if (sd.handler == null) return Mono.error(new IllegalStateException("No handler for step " + sd.id));
             StepHandler h = sd.handler;
@@ -362,8 +423,9 @@ public class SagaEngine {
         return finalBase
                 .onErrorResume(err -> {
                     if (retry > 0) {
-                        return Mono.delay(Duration.ofMillis(Math.max(0, backoffMs)))
-                                .then(attemptCallHandler(sd, input, ctx, timeoutMs, retry - 1, backoffMs, stepId));
+                        long delay = computeDelay(backoffMs, jitter, jitterFactor);
+                        return Mono.delay(Duration.ofMillis(Math.max(0, delay)))
+                                .then(attemptCallHandler(sd, input, ctx, timeoutMs, retry - 1, backoffMs, jitter, jitterFactor, stepId));
                     }
                     return Mono.error(err);
                 })
@@ -484,29 +546,75 @@ public class SagaEngine {
                                   List<String> completionOrder,
                                   Map<String, Object> stepInputs,
                                   SagaContext ctx) {
+        if (policy == CompensationPolicy.GROUPED_PARALLEL) {
+            return compensateGroupedByLayer(sagaName, saga, completionOrder, stepInputs, ctx);
+        }
+        return compensateSequential(sagaName, saga, completionOrder, stepInputs, ctx);
+    }
+
+    private Mono<Void> compensateSequential(String sagaName,
+                                            SagaDefinition saga,
+                                            List<String> completionOrder,
+                                            Map<String, Object> stepInputs,
+                                            SagaContext ctx) {
         List<String> reversed = new ArrayList<>(completionOrder);
         Collections.reverse(reversed);
         return Flux.fromIterable(reversed)
-                .concatMap(stepId -> {
-                    StepDefinition sd = saga.steps.get(stepId);
-                    // Prefer handler-based compensation when provided
-                    if (sd.handler != null) {
-                        Object input = stepInputs.get(stepId);
-                        Object result = ctx.getResult(stepId);
-                        Object arg = input != null ? input : result; // simple heuristic; handler may ignore
-                        return sd.handler.compensate(arg, ctx)
-                                .doOnSuccess(v -> ctx.setStatus(stepId, StepStatus.COMPENSATED))
-                                .doOnError(err -> events.onCompensated(sagaName, ctx.correlationId(), stepId, err))
-                                .onErrorResume(err -> Mono.empty());
-                    }
-                    Method comp = sd.compensateInvocationMethod != null ? sd.compensateInvocationMethod : sd.compensateMethod;
-                    if (comp == null) return Mono.empty();
-                    Object arg = resolveCompensationArg(comp, stepInputs.get(stepId), ctx.getResult(stepId));
-                    return invokeMono(saga.bean, comp, arg, ctx)
-                            .doOnSuccess(v -> ctx.setStatus(stepId, StepStatus.COMPENSATED))
-                            .doOnError(err -> events.onCompensated(sagaName, ctx.correlationId(), stepId, err))
-                            .onErrorResume(err -> Mono.empty()); // swallow compensation errors in MVP
+                .concatMap(stepId -> compensateOne(sagaName, saga, stepId, stepInputs, ctx))
+                .then();
+    }
+
+    private Mono<Void> compensateGroupedByLayer(String sagaName,
+                                                SagaDefinition saga,
+                                                List<String> completionOrder,
+                                                Map<String, Object> stepInputs,
+                                                SagaContext ctx) {
+        // Build layers and keep only steps that actually completed
+        List<List<String>> layers = buildLayers(saga);
+        Set<String> completed = new LinkedHashSet<>(completionOrder);
+        List<List<String>> filtered = new ArrayList<>();
+        for (List<String> layer : layers) {
+            List<String> lf = layer.stream().filter(completed::contains).toList();
+            if (!lf.isEmpty()) filtered.add(lf);
+        }
+        Collections.reverse(filtered);
+        return Flux.fromIterable(filtered)
+                .concatMap(layer -> Mono.when(layer.stream()
+                        .map(stepId -> compensateOne(sagaName, saga, stepId, stepInputs, ctx))
+                        .toList()
+                ))
+                .then();
+    }
+
+    private Mono<Void> compensateOne(String sagaName,
+                                     SagaDefinition saga,
+                                     String stepId,
+                                     Map<String, Object> stepInputs,
+                                     SagaContext ctx) {
+        StepDefinition sd = saga.steps.get(stepId);
+        if (sd == null) return Mono.empty();
+        if (sd.handler != null) {
+            Object input = stepInputs.get(stepId);
+            Object result = ctx.getResult(stepId);
+            Object arg = input != null ? input : result; // simple heuristic; handler may ignore
+            return sd.handler.compensate(arg, ctx)
+                    .doOnSuccess(v -> {
+                        ctx.setStatus(stepId, StepStatus.COMPENSATED);
+                        events.onCompensated(sagaName, ctx.correlationId(), stepId, null);
+                    })
+                    .doOnError(err -> events.onCompensated(sagaName, ctx.correlationId(), stepId, err))
+                    .onErrorResume(err -> Mono.empty());
+        }
+        Method comp = sd.compensateInvocationMethod != null ? sd.compensateInvocationMethod : sd.compensateMethod;
+        if (comp == null) return Mono.empty();
+        Object arg = resolveCompensationArg(comp, stepInputs.get(stepId), ctx.getResult(stepId));
+        return invokeMono(saga.bean, comp, arg, ctx)
+                .doOnSuccess(v -> {
+                    ctx.setStatus(stepId, StepStatus.COMPENSATED);
+                    events.onCompensated(sagaName, ctx.correlationId(), stepId, null);
                 })
+                .doOnError(err -> events.onCompensated(sagaName, ctx.correlationId(), stepId, err))
+                .onErrorResume(err -> Mono.empty())
                 .then();
     }
 
