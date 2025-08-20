@@ -225,10 +225,10 @@ public class PaymentService {
     SagaContext ctx = new SagaContext(); // auto-generates correlationId (UUID)
     ctx.putHeader("X-User-Id", "123");   // propagate custom headers downstream
 
-    Map<String, Object> inputs = Map.of(
-        "reserveFunds", reserveCmd,
-        "createOrder", createCmd
-    );
+    StepInputs inputs = StepInputs.builder()
+        .forStepId("reserveFunds", reserveCmd)
+        .forStepId("createOrder", createCmd)
+        .build();
 
     return engine
         .run("PaymentSaga", inputs, ctx)
@@ -319,6 +319,7 @@ Example:
 import com.catalis.transactionalengine.core.SagaContext;
 import com.catalis.transactionalengine.engine.SagaEngine;
 import com.catalis.transactionalengine.engine.StepHandler;
+import com.catalis.transactionalengine.engine.StepInputs;
 import com.catalis.transactionalengine.registry.SagaBuilder;
 import com.catalis.transactionalengine.registry.SagaDefinition;
 import reactor.core.publisher.Mono;
@@ -343,10 +344,10 @@ SagaDefinition transferSaga = SagaBuilder.saga("transfer")
 
 // Execute
 SagaContext ctx = new SagaContext();
-Map<String, Object> inputs = Map.of(
-    "debit", new DebitRequest(/*...*/),
-    "credit", new CreditRequest(/*...*/)
-);
+StepInputs inputs = StepInputs.builder()
+    .forStepId("debit", new DebitRequest(/*...*/))
+    .forStepId("credit", new CreditRequest(/*...*/))
+    .build();
 Mono<Map<String, Object>> result = sagaEngine.run(transferSaga, inputs, ctx);
 
 // Optionally block in non-reactive boundary
@@ -378,6 +379,70 @@ Notes:
 - All per-step knobs (retry, backoffMs, timeoutMs, idempotencyKey, dependsOn) are supported by the builder and honored by the engine.
 - Classic annotation-based usage is unchanged. You can freely mix: a step may have both annotation-discovered method and a handler, and the engine will prefer the handler if present.
 - Observability, idempotency and compensation semantics remain the same as described above.
+
+## Step inputs: typed DSL (new) and legacy Map
+To eliminate Map<String,Object> and stringly-typed step ids from the public API while increasing expressiveness, the engine provides a typed StepInputs DSL and corresponding SagaEngine overloads.
+
+New overloads:
+- Mono<Map<String,Object>> run(String sagaName, StepInputs inputs, SagaContext ctx)
+- Mono<Map<String,Object>> run(SagaDefinition saga, StepInputs inputs, SagaContext ctx)
+
+Legacy overloads that accept Map remain available for backward compatibility and are marked @Deprecated in code. They will be phased out in a future release.
+
+Basic usage (programmatic SagaDefinition):
+
+```java
+SagaDefinition def = SagaBuilder.saga("S1")
+  .step("a").handler((StepHandler<String, String>) (in, ctx) -> Mono.just("A-" + in)).add()
+  .step("b").dependsOn("a").handler((StepHandler<Void, String>) (in, ctx) -> Mono.just("B" + ctx.getResult("a"))).add()
+  .build();
+
+SagaContext ctx = new SagaContext();
+
+StepInputs inputs = StepInputs.builder()
+  .forStepId("a", "in")
+  .build();
+
+Map<String,Object> results = sagaEngine.run(def, inputs, ctx).block();
+// results.get("a") == "A-in"; results.get("b") == "BA-in"
+```
+
+Dynamic inputs via resolvers
+When an input depends on previously produced results and/or headers, provide a resolver that will be evaluated right before the step runs. The resolved value is cached so compensation can reuse it if needed.
+
+```java
+StepInputs inputs = StepInputs.builder()
+  .forStepId("issueTicket", c -> new IssueTicketReq(
+      (FlightRes) c.getResult("reserveFlight"),
+      (PaymentReceipt) c.getResult("capturePayment"),
+      c.headers().get("X-User-Id")
+  ))
+  .build();
+
+sagaEngine.run("TravelSaga", inputs, ctx);
+```
+
+Addressing steps without strings
+If you prefer to avoid raw ids, you can pass a Method to the builder, and it will extract the @SagaStep id from it:
+
+```java
+class TravelSaga {
+  @SagaStep(id = "reserveFlight", compensate = "cancelFlight")
+  Mono<FlightReservation> reserveFlight(ReserveFlightReq req, SagaContext ctx) { ... }
+}
+
+Method m = TravelSaga.class.getMethod("reserveFlight", ReserveFlightReq.class, SagaContext.class);
+StepInputs in = StepInputs.builder().forStep(m, new ReserveFlightReq(...)).build();
+```
+
+Note: A convenient API based on direct method references (e.g., TravelSaga::reserveFlight) may be added in a future version. For now, you can use forStepId or provide a Method.
+
+Compensation semantics unchanged
+- During compensation, the engine prefers passing the original step input to the compensation method when its parameter type matches; otherwise it tries the step result. The materialized inputs (concrete values plus any resolved and cached values) are used for this decision.
+
+Migration
+- Start using StepInputs.builder() and the new run(..., StepInputs, ...) overloads.
+- The Map-based overloads still work but are deprecated. Prefer the new API for type-safety and better IDE navigation.
 
 ## Observability
 What is emitted and when
