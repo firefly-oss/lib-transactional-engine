@@ -17,7 +17,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class ParameterInjectionIT {
+class VariablesIT {
 
     private AnnotationConfigApplicationContext ctx;
 
@@ -32,46 +32,49 @@ class ParameterInjectionIT {
         @Bean public Orchestrator orchestrator() { return new Orchestrator(); }
     }
 
-    @Saga(name = "ParamSaga")
+    @Saga(name = "VarsSaga")
     static class Orchestrator {
         @SagaStep(id = "r1", compensate = "cr1")
-        public Mono<String> r1() { return Mono.just("R1"); }
+        @SetVariable("foo")
+        public Mono<String> r1() { return Mono.just("F"); }
         public Mono<Void> cr1(String res) { return Mono.empty(); }
 
         @SagaStep(id = "p1", compensate = "cp1", dependsOn = {"r1"})
-        public Mono<String> p1(@FromStep("r1") String r1, @Header("X-User-Id") String user, SagaContext ctx) {
-            return Mono.just("P1:" + r1 + ":" + user + ":" + ctx.correlationId());
+        public Mono<String> p1(@Variable("foo") String foo, SagaContext ctx) {
+            ctx.putVariable("bar", "B:" + foo);
+            return Mono.just("P:" + foo);
         }
         public Mono<Void> cp1(String res, SagaContext ctx) { return Mono.empty(); }
 
         @SagaStep(id = "c1", compensate = "cc1", dependsOn = {"p1"})
-        public Mono<String> c1(@Headers Map<String,String> headers, @Input("extra") String extra) {
-            return Mono.just("C1:" + headers.get("X-User-Id") + ":" + extra);
+        public Mono<String> c1(@Variables Map<String,Object> vars) {
+            return Mono.just("C:" + vars.get("foo") + ":" + vars.get("bar"));
         }
         public Mono<Void> cc1(String res) { return Mono.empty(); }
     }
 
     @Test
-    void multiparameter_injection_works() {
+    void variables_annotations_work() {
         ctx = new AnnotationConfigApplicationContext(AppConfig.class);
         SagaRegistry reg = ctx.getBean(SagaRegistry.class);
-        assertNotNull(reg.getSaga("ParamSaga"));
+        assertNotNull(reg.getSaga("VarsSaga"));
 
         SagaEngine engine = ctx.getBean(SagaEngine.class);
-        SagaContext sctx = new SagaContext("corr-param-1");
-        sctx.putHeader("X-User-Id", "u1");
+        SagaContext sctx = new SagaContext("corr-vars-1");
 
-        StepInputs inputs = StepInputs.builder()
-                .forStepId("c1", Map.of("extra", "E"))
-                .build();
+        StepInputs inputs = StepInputs.builder().build();
 
-        SagaResult result = engine.execute("ParamSaga", inputs, sctx).block();
+        SagaResult result = engine.execute("VarsSaga", inputs, sctx).block();
         assertNotNull(result);
         assertTrue(result.isSuccess());
-        assertEquals("ParamSaga", result.sagaName());
-        assertEquals("ParamSaga", sctx.sagaName());
-        assertEquals("R1", result.resultOf("r1", String.class).orElse(null));
-        assertTrue(result.resultOf("p1", String.class).orElse("").startsWith("P1:R1:u1:"));
-        assertEquals("C1:u1:E", result.resultOf("c1", String.class).orElse(null));
+        assertEquals("VarsSaga", result.sagaName());
+        assertEquals("VarsSaga", sctx.sagaName());
+
+        assertEquals("F", result.resultOf("r1", String.class).orElse(null));
+        assertEquals("P:F", result.resultOf("p1", String.class).orElse(null));
+        assertEquals("C:F:B:F", result.resultOf("c1", String.class).orElse(null));
+
+        assertEquals("F", sctx.getVariable("foo"));
+        assertEquals("B:F", sctx.getVariable("bar"));
     }
 }

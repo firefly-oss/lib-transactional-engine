@@ -88,15 +88,15 @@ class FunctionalSagaIT {
         assertNotNull(reg.getSaga("FuncSuccess"));
 
         SagaEngine engine = ctx.getBean(SagaEngine.class);
-        SagaContext sctx = new SagaContext("corr-func-1");
 
-        SagaResult result = engine.execute("FuncSuccess", StepInputs.builder().build(), sctx).block();
+        SagaResult result = engine.execute("FuncSuccess", StepInputs.builder().build()).block();
         assertNotNull(result);
         assertTrue(result.isSuccess());
+        assertEquals("FuncSuccess", result.sagaName());
         assertEquals("A", result.resultOf("a", String.class).orElse(null));
         assertEquals("B:A", result.resultOf("b", String.class).orElse(null));
-        assertEquals(StepStatus.DONE, sctx.getStatus("a"));
-        assertEquals(StepStatus.DONE, sctx.getStatus("b"));
+        assertEquals(StepStatus.DONE, result.steps().get("a").status());
+        assertEquals(StepStatus.DONE, result.steps().get("b").status());
 
         TestEvents ev = (TestEvents) ctx.getBean(SagaEvents.class);
         assertTrue(ev.calls.contains("completed:true"));
@@ -111,12 +111,16 @@ class FunctionalSagaIT {
         SagaContext sctx = new SagaContext("corr-func-2");
 
         StepVerifier.create(engine.execute("FuncFail", StepInputs.builder().build(), sctx))
-                .assertNext(r -> assertFalse(r.isSuccess()))
+                .assertNext(r -> {
+                    assertFalse(r.isSuccess());
+                    assertEquals("FuncFail", r.sagaName());
+                })
                 .verifyComplete();
 
         // x should be compensated; y failed
         assertEquals(StepStatus.COMPENSATED, sctx.getStatus("x"));
         assertEquals(StepStatus.FAILED, sctx.getStatus("y"));
+        assertEquals("FuncFail", sctx.sagaName());
 
         TestEvents ev = (TestEvents) ctx.getBean(SagaEvents.class);
         assertTrue(ev.calls.contains("completed:false"));
