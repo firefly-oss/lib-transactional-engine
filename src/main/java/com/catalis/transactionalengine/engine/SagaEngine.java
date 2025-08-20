@@ -193,9 +193,15 @@ public class SagaEngine {
     // New API returning a typed SagaResult
     public Mono<SagaResult> execute(String sagaName, StepInputs inputs, SagaContext ctx) {
         Objects.requireNonNull(sagaName, "sagaName");
-        Objects.requireNonNull(ctx, "ctx");
         SagaDefinition saga = registry.getSaga(sagaName);
         return execute(saga, inputs, ctx);
+    }
+
+    /** Convenience overload: automatically creates a SagaContext using the @Saga name. */
+    public Mono<SagaResult> execute(String sagaName, StepInputs inputs) {
+        Objects.requireNonNull(sagaName, "sagaName");
+        SagaDefinition saga = registry.getSaga(sagaName);
+        return execute(saga, inputs, null);
     }
 
     /** Transitional convenience: allow Map-based inputs; prefer StepInputs DSL. */
@@ -210,6 +216,16 @@ public class SagaEngine {
         return execute(sagaName, b.build(), ctx);
     }
 
+    /** Convenience overload: automatically creates a SagaContext using the @Saga name. */
+    public Mono<SagaResult> execute(String sagaName, Map<String, Object> stepInputs) {
+        Objects.requireNonNull(sagaName, "sagaName");
+        StepInputs.Builder b = StepInputs.builder();
+        if (stepInputs != null) {
+            stepInputs.forEach(b::forStepId);
+        }
+        return execute(sagaName, b.build());
+    }
+
     /** Transitional convenience: allow Map-based inputs; prefer StepInputs DSL. */
     @Deprecated
     public Mono<SagaResult> execute(SagaDefinition saga, Map<String, Object> stepInputs, SagaContext ctx) {
@@ -222,13 +238,22 @@ public class SagaEngine {
         return execute(saga, b.build(), ctx);
     }
 
+    /** Convenience overload: automatically creates a SagaContext using the @Saga name. */
+    public Mono<SagaResult> execute(SagaDefinition saga, StepInputs inputs) {
+        return execute(saga, inputs, (SagaContext) null);
+    }
+
     public Mono<SagaResult> execute(SagaDefinition saga, StepInputs inputs, SagaContext ctx) {
         Objects.requireNonNull(saga, "saga");
-        Objects.requireNonNull(ctx, "ctx");
+        // Auto-create context if not provided
+        final com.catalis.transactionalengine.core.SagaContext finalCtx =
+                (ctx != null ? ctx : new com.catalis.transactionalengine.core.SagaContext());
+        // Always set the saga name on the context for visibility
+        finalCtx.setSagaName(saga.name);
         String sagaName = saga.name;
-        String sagaId = ctx.correlationId();
+        String sagaId = finalCtx.correlationId();
         events.onStart(sagaName, sagaId);
-        events.onStart(sagaName, sagaId, ctx);
+        events.onStart(sagaName, sagaId, finalCtx);
 
         List<List<String>> layers = buildLayers(saga);
         List<String> completionOrder = Collections.synchronizedList(new ArrayList<>());
@@ -240,7 +265,7 @@ public class SagaEngine {
                 .concatMap(layer -> {
                     if (failed.get()) return Mono.empty();
                     var executions = layer.stream().map(stepId ->
-                            executeStep(sagaName, saga, stepId, inputs != null ? inputs.resolveFor(stepId, ctx) : null, ctx)
+                            executeStep(sagaName, saga, stepId, inputs != null ? inputs.resolveFor(stepId, finalCtx) : null, finalCtx)
                                     .doOnSuccess(v -> completionOrder.add(stepId))
                                     .onErrorResume(err -> { failed.set(true); stepErrors.put(stepId, err); return Mono.empty(); })
                     ).toList();
@@ -250,18 +275,18 @@ public class SagaEngine {
                     boolean success = !failed.get();
                     events.onCompleted(sagaName, sagaId, success);
                     if (success) {
-                        return Mono.just(SagaResult.from(sagaName, ctx, compensated, stepErrors, saga.steps.keySet()));
+                        return Mono.just(SagaResult.from(sagaName, finalCtx, compensated, stepErrors, saga.steps.keySet()));
                     }
-                    Map<String, Object> materialized = inputs != null ? inputs.materializedView(ctx) : Map.of();
-                    return compensate(sagaName, saga, completionOrder, materialized, ctx)
+                    Map<String, Object> materialized = inputs != null ? inputs.materializedView(finalCtx) : Map.of();
+                    return compensate(sagaName, saga, completionOrder, materialized, finalCtx)
                             .then(Mono.defer(() -> {
                                 // derive compensated flags from context statuses
                                 for (String id : completionOrder) {
-                                    if (StepStatus.COMPENSATED.equals(ctx.getStatus(id))) {
+                                    if (StepStatus.COMPENSATED.equals(finalCtx.getStatus(id))) {
                                         compensated.put(id, true);
                                     }
                                 }
-                                return Mono.just(SagaResult.from(sagaName, ctx, compensated, stepErrors, saga.steps.keySet()));
+                                return Mono.just(SagaResult.from(sagaName, finalCtx, compensated, stepErrors, saga.steps.keySet()));
                             }));
                 }));
     }
@@ -351,7 +376,16 @@ public class SagaEngine {
             execution = execution.subscribeOn(Schedulers.parallel());
         }
         return execution
-                .doOnNext(res -> ctx.putResult(stepId, res))
+                .doOnNext(res -> {
+                    ctx.putResult(stepId, res);
+                    var setVarAnn = sd.stepMethod.getAnnotation(com.catalis.transactionalengine.annotations.SetVariable.class);
+                    if (setVarAnn != null) {
+                        String name = setVarAnn.value();
+                        if (name != null && !name.isBlank()) {
+                            ctx.putVariable(name, res);
+                        }
+                    }
+                })
                 .then()
                 .doOnSuccess(v -> {
                     long latency = System.currentTimeMillis() - start;
@@ -531,12 +565,25 @@ public class SagaEngine {
                 continue;
             }
 
+            var variableAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variable.class);
+            if (variableAnn != null) {
+                String name = variableAnn.value();
+                resolvers[i] = (in, c) -> c.getVariable(name);
+                continue;
+            }
+
+            var variablesAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variables.class);
+            if (variablesAnn != null) {
+                resolvers[i] = (in, c) -> c.variables();
+                continue;
+            }
+
             if (!implicitUsed) {
                 resolvers[i] = (in, c) -> in;
                 implicitUsed = true;
             } else {
                 String msg = "Unresolvable parameter '" + p.getName() + "' at position " + i +
-                        " in method " + method + ". Use @Input/@FromStep/@Header/@Headers or SagaContext.";
+                        " in method " + method + ". Use @Input/@FromStep/@Header/@Headers/@Variable/@Variables or SagaContext.";
                 throw new IllegalStateException(msg);
             }
         }
