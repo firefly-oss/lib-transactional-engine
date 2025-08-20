@@ -212,11 +212,23 @@ public class SagaRegistry {
                     }
                     continue;
                 }
+                var varAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variable.class);
+                if (varAnn != null) {
+                    // no static type validation; runtime variable value must be assignable to the parameter type
+                    continue;
+                }
+                var varsAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variables.class);
+                if (varsAnn != null) {
+                    if (!java.util.Map.class.isAssignableFrom(type)) {
+                        throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @Variables expects a Map type but was " + type.getName());
+                    }
+                    continue;
+                }
 
                 // Unannotated and not SagaContext -> implicit input
                 implicitInputs++;
                 if (implicitInputs > 1) {
-                    throw new IllegalStateException("Step '" + sd.id + "' has more than one unannotated parameter; annotate with @Input/@FromStep/@Header/@Headers or use SagaContext");
+                    throw new IllegalStateException("Step '" + sd.id + "' has more than one unannotated parameter; annotate with @Input/@FromStep/@Header/@Headers/@Variable/@Variables or use SagaContext");
                 }
             }
         }

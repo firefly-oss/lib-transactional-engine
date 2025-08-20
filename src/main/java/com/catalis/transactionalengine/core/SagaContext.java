@@ -12,14 +12,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * Holds per-execution data such as:
  * - Correlation id (UUID by default) and outbound headers to propagate (e.g., user id).
+ * - A general-purpose variables store for cross-step data exchange.
  * - Step results, statuses, attempts, latencies, and per-step start timestamps.
  * - A set of idempotency keys used to skip steps within the same run when configured.
+ * - The sagaName corresponding to the {@code @Saga(name=...)} being executed.
  *
  * Thread-safe for concurrent updates from steps executing in the same layer.
  */
 public class SagaContext {
     private final String correlationId;
+    private String sagaName; // optional; set by engine based on @Saga.name
     private final Map<String, String> headers = new ConcurrentHashMap<>();
+    private final Map<String, Object> variables = new ConcurrentHashMap<>();
 
     private final Map<String, Object> stepResults = new ConcurrentHashMap<>();
     private final Map<String, StepStatus> stepStatuses = new ConcurrentHashMap<>();
@@ -37,10 +41,26 @@ public class SagaContext {
         this.correlationId = correlationId;
     }
 
+    public SagaContext(String correlationId, String sagaName) {
+        this.correlationId = correlationId;
+        this.sagaName = sagaName;
+    }
+
     public String correlationId() {
         return correlationId;
     }
 
+    /** Name of the saga being executed (from @Saga.name). May be null if not set. */
+    public String sagaName() {
+        return sagaName;
+    }
+
+    /** Set by the engine when executing a saga; can be used by application code if needed. */
+    public void setSagaName(String sagaName) {
+        this.sagaName = sagaName;
+    }
+
+    // Headers
     public Map<String, String> headers() {
         return headers;
     }
@@ -49,6 +69,37 @@ public class SagaContext {
         headers.put(key, value);
     }
 
+    // Variables
+    /** Returns a live, thread-safe map for variables storage. */
+    public Map<String, Object> variables() {
+        return variables;
+    }
+
+    public void putVariable(String name, Object value) {
+        if (name == null) return;
+        if (value == null) {
+            variables.remove(name);
+        } else {
+            variables.put(name, value);
+        }
+    }
+
+    public Object getVariable(String name) {
+        return variables.get(name);
+    }
+
+    public <T> T getVariableAs(String name, Class<T> type) {
+        Object v = variables.get(name);
+        if (v == null) return null;
+        if (type.isInstance(v)) return type.cast(v);
+        throw new ClassCastException("Variable '" + name + "' is of type " + v.getClass().getName() + " and cannot be cast to " + type.getName());
+    }
+
+    public void removeVariable(String name) {
+        variables.remove(name);
+    }
+
+    // Step bookkeeping
     public Object getResult(String stepId) {
         return stepResults.get(stepId);
     }
@@ -103,6 +154,7 @@ public class SagaContext {
         return startedAt;
     }
 
+    // Views
     public Map<String, Object> stepResultsView() {
         return Collections.unmodifiableMap(stepResults);
     }
