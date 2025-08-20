@@ -62,6 +62,7 @@ public class SagaEngine {
      * @param ctx        in-memory execution context (carries correlation id, headers, and result/status maps)
      * @return Mono emitting an immutable view of step results if the saga completed successfully; otherwise errors
      */
+    @Deprecated
     public Mono<Map<String, Object>> run(String sagaName,
                                          Map<String, Object> stepInputs,
                                          SagaContext ctx) {
@@ -75,6 +76,7 @@ public class SagaEngine {
      * Execute a Saga using the provided definition (programmatic or from registry).
      * Keeps the same semantics as the name-based overload.
      */
+    @Deprecated
     public Mono<Map<String, Object>> run(SagaDefinition saga,
                                          Map<String, Object> stepInputs,
                                          SagaContext ctx) {
@@ -117,6 +119,56 @@ public class SagaEngine {
                         return Mono.just(ctx.stepResultsView());
                     }
                     return compensate(sagaName, saga, completionOrder, stepInputs != null ? stepInputs : Map.of(), ctx)
+                            .then(Mono.error(stepErrors.values().stream().findFirst().orElse(new RuntimeException("Saga failed"))));
+                }));
+    }
+
+    /** New API: typed StepInputs without exposing Map in public interface. */
+    public Mono<Map<String, Object>> run(String sagaName, StepInputs inputs, SagaContext ctx) {
+        Objects.requireNonNull(sagaName, "sagaName");
+        Objects.requireNonNull(ctx, "ctx");
+        SagaDefinition saga = registry.getSaga(sagaName);
+        return run(saga, inputs, ctx);
+    }
+
+    public Mono<Map<String, Object>> run(SagaDefinition saga, StepInputs inputs, SagaContext ctx) {
+        Objects.requireNonNull(saga, "saga");
+        Objects.requireNonNull(ctx, "ctx");
+        String sagaName = saga.name;
+        String sagaId = ctx.correlationId();
+        events.onStart(sagaName, sagaId);
+
+        // Build layers using indegree
+        List<List<String>> layers = buildLayers(saga);
+        List<String> completionOrder = Collections.synchronizedList(new ArrayList<>());
+        AtomicBoolean failed = new AtomicBoolean(false);
+        Map<String, Throwable> stepErrors = new ConcurrentHashMap<>();
+
+        return Flux.fromIterable(layers)
+                .concatMap(layer -> {
+                    if (failed.get()) {
+                        return Mono.empty();
+                    }
+                    // run all in parallel within layer
+                    List<Mono<Void>> executions = layer.stream().map(stepId ->
+                            executeStep(sagaName, saga, stepId, inputs != null ? inputs.resolveFor(stepId, ctx) : null, ctx)
+                                    .doOnSuccess(res -> completionOrder.add(stepId))
+                                    .onErrorResume(err -> {
+                                        failed.set(true);
+                                        stepErrors.put(stepId, err);
+                                        return Mono.empty();
+                                    })
+                    ).toList();
+                    return Mono.when(executions);
+                })
+                .then(Mono.defer(() -> {
+                    boolean success = !failed.get();
+                    events.onCompleted(sagaName, sagaId, success);
+                    if (success) {
+                        return Mono.just(ctx.stepResultsView());
+                    }
+                    Map<String, Object> materialized = inputs != null ? inputs.materializedView(ctx) : Map.of();
+                    return compensate(sagaName, saga, completionOrder, materialized, ctx)
                             .then(Mono.error(stepErrors.values().stream().findFirst().orElse(new RuntimeException("Saga failed"))));
                 }));
     }
