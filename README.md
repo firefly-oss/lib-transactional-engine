@@ -327,6 +327,25 @@ Where to go deeper
     3) null (especially when only `SagaContext` is expected).
 
 
+## Installation
+Maven
+
+```xml
+<dependency>
+  <groupId>com.catalis</groupId>
+  <artifactId>lib-transactional-engine</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+</dependency>
+```
+
+Gradle (Kotlin DSL)
+
+```kotlin
+dependencies {
+  implementation("com.catalis:lib-transactional-engine:1.0.0-SNAPSHOT")
+}
+```
+
 ## Quick start
 Follow this step-by-step guide to model and run your first saga.
 
@@ -453,24 +472,6 @@ It includes:
 - Practical guidance on timeouts, retries, and idempotency
 - Testing patterns with Reactor StepVerifier
 
-## Installation
-Maven
-
-```xml
-<dependency>
-  <groupId>com.catalis</groupId>
-  <artifactId>lib-transactional-engine</artifactId>
-  <version>1.0.0-SNAPSHOT</version>
-</dependency>
-```
-
-Gradle (Kotlin DSL)
-
-```kotlin
-dependencies {
-  implementation("com.catalis:lib-transactional-engine:1.0.0-SNAPSHOT")
-}
-```
 
 ## Migration guide
 
@@ -957,11 +958,6 @@ Notes
 - Mockito/ByteBuddy may emit a Java agent warning during tests; it is harmless.
 - Java 21+ is required (see badges and pom).
 
-## License
-Apache-2.0
-
-
-
 ## Cancellation
 
 This library runs steps using Reactor (Mono/Flux). Caller cancellation (disposing the subscription to SagaEngine.run/execute) behaves as follows:
@@ -978,3 +974,9 @@ Recommendations for cooperative cancellation:
 API notes:
 - SagaBuilder now supports Duration-based configuration methods: backoff(Duration) and timeout(Duration). Millisecond methods (backoffMs/timeoutMs) remain for backward compatibility but are deprecated.
 - SagaEvents.onCompensated is emitted for both success and error cases; a null error parameter indicates a successful compensation.
+
+## License
+Apache-2.0
+
+
+

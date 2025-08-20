@@ -13,6 +13,28 @@ This tutorial is a hands-on, step-by-step deep dive into the Firefly Transaction
 
 If you're looking for the full reference, see README.md. Here we go deeper into the why and how with a realistic end-to-end flow.
 
+## Table of Contents
+- [0) Prerequisites](#0-prerequisites)
+- [1) Enable the engine in your Spring Boot app](#1-enable-the-engine-in-your-spring-boot-app)
+- [2) Problem definition — Travel booking, end to end](#2-problem-definition--travel-booking-end-to-end)
+- [3) Define request/response models (inputs/outputs)](#3-define-requestresponse-models-inputsoutputs)
+- [4) Visualize the DAG](#4-visualize-the-dag)
+- [5) Orchestrator implementation (@Saga + @SagaStep)](#5-orchestrator-implementation-saga--sagastep)
+- [6) Executing the saga](#6-executing-the-saga)
+- [7) Failure walkthrough (deep dive)](#7-failure-walkthrough-deep-dive)
+- [8) Retries, backoff, and timeouts — choosing values](#8-retries-backoff-and-timeouts--choosing-values)
+- [9) Idempotency (per run) and when to use it](#9-idempotency-per-run-and-when-to-use-it)
+- [10) Argument resolution for compensations (nuance)](#10-argument-resolution-for-compensations-nuance)
+- [11) Observability — what to look for](#11-observability--what-to-look-for)
+- [12) Testing the Travel Booking Saga](#12-testing-the-travel-booking-saga)
+- [13) Programmatic (no-annotations) variant — modern approach](#13-programmatic-no-annotations-variant--modern-approach)
+- [14) Practical guidance and edge cases](#14-practical-guidance-and-edge-cases)
+- [15) Run tests in this repo](#15-run-tests-in-this-repo)
+- [16) Summary](#16-summary)
+- [17) Parameter injection (multi-parameter)](#17-parameter-injection-multi-parameter)
+- [18) StepInputs DSL with lazy resolvers](#18-stepinputs-dsl-with-lazy-resolvers)
+- [Cancellation](#cancellation)
+
 
 ## 0) Prerequisites
 - Java 21+
