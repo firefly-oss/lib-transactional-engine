@@ -263,7 +263,7 @@ Why compensations like notifyFailure exist: the engine requires a compensation m
 
 
 ## 6) Executing the saga
-Use `SagaEngine` to run by name. Supply inputs for each step that expects an input. Steps that only need `SagaContext` can omit inputs.
+Use `SagaEngine` to execute by name with typed `StepInputs` and receive a typed `SagaResult`. Supply inputs for each step that expects an input. Steps that only need `SagaContext` can omit inputs.
 
 ```java
 import com.catalis.transactionalengine.core.SagaContext;
@@ -284,17 +284,17 @@ public class TravelService {
     ctx.putHeader("X-User-Id", "u-123");
     ctx.putHeader("X-Tenant", "eu-west");
 
-    Map<String, Object> inputs = Map.of(
-        "initBooking", new InitBookingCmd("cust-100", "trip-42"),
-        "reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2),
-        "reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1),
-        "reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"),
-        "capturePayment", new PaymentReq("cust-100", 2_450_00, "USD")
-    );
+    StepInputs inputs = StepInputs.builder()
+        .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
+        .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
+        .forStepId("reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1))
+        .forStepId("reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"))
+        .forStepId("capturePayment", new PaymentReq("cust-100", 2_450_00, "USD"))
+        .build();
 
     return engine
-        .run("TravelBookingSaga", inputs, ctx)
-        .map(results -> (Itinerary) results.get("issueItinerary"));
+        .execute("TravelBookingSaga", inputs, ctx)
+        .map(res -> res.resultOf("issueItinerary", Itinerary.class).orElse(null));
   }
 }
 ```
@@ -380,14 +380,16 @@ class TravelBookingTest {
     SagaEngine engine = /* injected */ null;
     SagaContext ctx = new SagaContext("corr-travel-1");
 
-    StepVerifier.create(engine.run("TravelBookingSaga", Map.of(
-        "initBooking", new InitBookingCmd("cust-100", "trip-42"),
-        "reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2),
-        "reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1),
-        "reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"),
-        "capturePayment", new PaymentReq("cust-100", 2_450_00, "USD")
-    ), ctx))
-    .expectNextMatches(results -> results.get("issueItinerary") != null)
+    StepInputs inputs = StepInputs.builder()
+        .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
+        .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
+        .forStepId("reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1))
+        .forStepId("reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"))
+        .forStepId("capturePayment", new PaymentReq("cust-100", 2_450_00, "USD"))
+        .build();
+
+    StepVerifier.create(engine.execute("TravelBookingSaga", inputs, ctx))
+    .expectNextMatches(res -> res.resultOf("issueItinerary", Itinerary.class).isPresent())
     .verifyComplete();
   }
 }
@@ -438,7 +440,7 @@ Map<String, Object> inputs = Map.of(
   "reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"),
   "capturePayment", new PaymentReq("cust-100", 2_450_00, "USD")
 );
-Mono<Map<String,Object>> result = sagaEngine.run(travel, inputs, ctx);
+Mono<com.catalis.transactionalengine.core.SagaResult> result = sagaEngine.execute(travel, inputs, ctx);
 ```
 
 
@@ -465,5 +467,50 @@ We built a Travel Booking Saga that:
 - Demonstrates per-run idempotency and nuanced compensation argument resolution
 
 This example is intentionally different from the README’s payment/order flow and goes deeper into the orchestration and failure semantics you’ll apply in production.
+
+## 17) Parameter injection (multi-parameter)
+The engine can inject values into step method parameters by reading annotations from the original method signature. You can mix and match:
+- @FromStep("id"): inject the result of another step
+- @Header("name"): inject a single outbound header
+- @Headers: inject all headers as Map<String,String>
+- @Input or @Input("key"): inject the step input (or a key from a Map input)
+- SagaContext: injected by type
+
+Example in this travel saga:
+```java
+@SagaStep(id = "prepareDocs", compensate = "noop", dependsOn = {"reserveFlight", "reserveHotel"})
+public Mono<Void> prepareDocs(
+  @FromStep("reserveFlight") FlightRes flight,
+  @FromStep("reserveHotel") HotelRes hotel,
+  @Header("X-User-Id") String user,
+  SagaContext ctx
+) {
+  // Build a consolidated document request using flight + hotel + user
+  return Mono.empty();
+}
+```
+Validation rules are applied at startup so misconfigurations fail fast (unknown step ids, wrong parameter types for @Headers, etc.).
+
+## 18) StepInputs DSL with lazy resolvers
+Prefer StepInputs.builder() over raw Map inputs. You can provide concrete values or lazy resolvers that will be evaluated right before the step runs and then cached for compensation.
+
+Concrete values by step id:
+```java
+StepInputs inputs = StepInputs.builder()
+  .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
+  .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
+  .build();
+```
+
+Lazy resolvers that depend on context and prior results:
+```java
+StepInputs inputs = StepInputs.builder()
+  .forStepId("issueItinerary", c -> new IssueReq(
+      (String) c.getResult("initBooking"),
+      c.headers().get("X-User-Id")
+  ))
+  .build();
+```
+These values are cached once resolved so the same input is reused by compensation if needed.
 
 Happy trips and reliable compensations!

@@ -14,8 +14,11 @@ This library does not replace database transactions; it coordinates cross-servic
 - [Architecture at a glance](#architecture-at-a-glance)
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
+- [Complete step-by-step tutorial](#complete-step-by-step-tutorial)
 - [Installation](#installation)
 - [Annotations reference](#annotations-reference)
+- [Step inputs + SagaResult](#step-inputs-typed-dsl-and-typed-results-sagaresult)
+- [Parameter injection](#parameter-injection-in-step-signatures-multi-parameter)
 - [Programmatic saga execution](#programmatic-saga-execution-fluent-flexible)
 - [Observability](#observability)
 - [HTTP integration](#http-integration)
@@ -231,8 +234,8 @@ public class PaymentService {
         .build();
 
     return engine
-        .run("PaymentSaga", inputs, ctx)
-        .map(results -> (Long) results.get("createOrder"));
+        .execute("PaymentSaga", inputs, ctx)
+        .map(r -> r.resultOf("createOrder", Long.class).orElse(null));
   }
 }
 ```
@@ -242,6 +245,21 @@ public class PaymentService {
 - Steps within the same layer run concurrently; createOrder waits for reserveFunds thanks to dependsOn.
 - If any step fails, the engine compensates already-finished steps in reverse completion order.
 - Structured logs are emitted (see Observability); all HTTP calls include `X-Transactional-Id` and your custom headers.
+
+## Complete step-by-step tutorial
+If you want a full, realistic, end-to-end tutorial that walks through every feature (DAG modeling, retries/backoff/timeouts, per-run idempotency, compensation semantics, HTTP header propagation, observability hooks, parameter injection, and the new StepInputs DSL with lazy resolvers), read:
+
+- TUTORIAL.md — Travel Booking Saga deep-dive
+
+It includes:
+- Visual DAG and compensation plan
+- Spring wiring with @EnableTransactionalEngine
+- Multi-parameter injection examples using @FromStep, @Header, @Headers, and SagaContext
+- Building inputs with StepInputs.builder(), including lazy resolvers that depend on previous results and headers
+- Executing sagas by name and programmatically with a fluent builder
+- Failure walkthrough with compensation order and context statuses
+- Practical guidance on timeouts, retries, and idempotency
+- Testing patterns with Reactor StepVerifier
 
 ## Installation
 Maven
@@ -266,7 +284,7 @@ dependencies {
 | Annotation | Purpose | Key attributes | Notes |
 | --- | --- | --- | --- |
 | `@EnableTransactionalEngine` | Enables the Transactional Engine Spring configuration: scans for `@Saga` beans, wires `SagaRegistry`, `SagaEngine`, default `SagaEvents`, and the `StepLoggingAspect`. | — | Add on a Spring `@Configuration` (often your `@SpringBootApplication`). |
-| `@Saga(name)` | Marks a class as an orchestrator with a human-friendly unique name. Use the same name when invoking `SagaEngine.run(name, ...)`. | `name` (required) | Name must be unique across sagas. |
+| `@Saga(name)` | Marks a class as an orchestrator with a human-friendly unique name. Use the same name when invoking `SagaEngine.execute(name, ...)`. | `name` (required) | Name must be unique across sagas. |
 | `@SagaStep` | Declares a saga step and its compensation. | `id` (required); `compensate` (required); `dependsOn[]`; `retry`; `backoffMs`; `timeoutMs`; `idempotencyKey` | Step and compensation method must be on the same class. |
 
 Supported step method signatures
@@ -348,10 +366,10 @@ StepInputs inputs = StepInputs.builder()
     .forStepId("debit", new DebitRequest(/*...*/))
     .forStepId("credit", new CreditRequest(/*...*/))
     .build();
-Mono<Map<String, Object>> result = sagaEngine.run(transferSaga, inputs, ctx);
+Mono<com.catalis.transactionalengine.core.SagaResult> result = sagaEngine.execute(transferSaga, inputs, ctx);
 
 // Optionally block in non-reactive boundary
-Map<String, Object> outputs = result.block();
+com.catalis.transactionalengine.core.SagaResult sagaResult = result.block();
 ```
 
 Handler-based compensation:
@@ -380,14 +398,14 @@ Notes:
 - Classic annotation-based usage is unchanged. You can freely mix: a step may have both annotation-discovered method and a handler, and the engine will prefer the handler if present.
 - Observability, idempotency and compensation semantics remain the same as described above.
 
-## Step inputs: typed DSL (new) and legacy Map
-To eliminate Map<String,Object> and stringly-typed step ids from the public API while increasing expressiveness, the engine provides a typed StepInputs DSL and corresponding SagaEngine overloads.
+## Step inputs: typed DSL and typed results (SagaResult)
+To eliminate Map<String,Object> and stringly-typed step ids from the public API while increasing expressiveness, the engine provides a typed StepInputs DSL and a new execution API that returns a typed SagaResult.
 
-New overloads:
-- Mono<Map<String,Object>> run(String sagaName, StepInputs inputs, SagaContext ctx)
-- Mono<Map<String,Object>> run(SagaDefinition saga, StepInputs inputs, SagaContext ctx)
+Preferred execution API:
+- Mono<SagaResult> execute(String sagaName, StepInputs inputs, SagaContext ctx)
+- Mono<SagaResult> execute(SagaDefinition saga, StepInputs inputs, SagaContext ctx)
 
-Legacy overloads that accept Map remain available for backward compatibility and are marked @Deprecated in code. They will be phased out in a future release.
+Backward compatibility: Map-based run(...) overloads remain available but are deprecated and will be removed in a future release. Use execute(...) instead.
 
 Basic usage (programmatic SagaDefinition):
 
@@ -403,8 +421,21 @@ StepInputs inputs = StepInputs.builder()
   .forStepId("a", "in")
   .build();
 
-Map<String,Object> results = sagaEngine.run(def, inputs, ctx).block();
-// results.get("a") == "A-in"; results.get("b") == "BA-in"
+var sagaResult = sagaEngine.execute(def, inputs, ctx).block();
+// sagaResult.resultOf("a", String.class).get().equals("A-in");
+// sagaResult.resultOf("b", String.class).get().equals("BA-in");
+```
+
+Accessing results and metadata with SagaResult
+```java
+SagaResult r = sagaEngine.execute(def, inputs, ctx).block();
+if (r.isSuccess()) {
+  String a = r.resultOf("a", String.class).orElseThrow();
+  // Per-step info
+  var out = r.steps().get("a");
+  int attempts = out.attempts();
+  long latency = out.latencyMs();
+}
 ```
 
 Dynamic inputs via resolvers
@@ -419,7 +450,7 @@ StepInputs inputs = StepInputs.builder()
   ))
   .build();
 
-sagaEngine.run("TravelSaga", inputs, ctx);
+sagaEngine.execute("TravelSaga", inputs, ctx);
 ```
 
 Addressing steps without strings
@@ -441,7 +472,7 @@ Compensation semantics unchanged
 - During compensation, the engine prefers passing the original step input to the compensation method when its parameter type matches; otherwise it tries the step result. The materialized inputs (concrete values plus any resolved and cached values) are used for this decision.
 
 Migration
-- Start using StepInputs.builder() and the new run(..., StepInputs, ...) overloads.
+- Start using StepInputs.builder() and the execute(..., StepInputs, ...) API returning SagaResult.
 - The Map-based overloads still work but are deprecated. Prefer the new API for type-safety and better IDE navigation.
 
 ## Observability
@@ -541,6 +572,38 @@ public class HeadersExample {
   }
 }
 ```
+
+## Parameter injection in step signatures (multi-parameter)
+Many steps don’t need external inputs if the engine can inject what they need directly into the method signature.
+
+New annotations:
+- `@Input` or `@Input("key")`: injects the step input (or a value from a Map input by key).
+- `@FromStep("stepId")`: injects the result of another step.
+- `@Header("X-User-Id")`: injects a single outbound header from `SagaContext.headers()`.
+- `@Headers`: injects the full headers map (`Map<String, String>`).
+- `SagaContext` continues to be injected by type.
+
+Example:
+
+```java
+@SagaStep(id = "issueTicket", compensate = "cancelTicket", dependsOn = {"reserveFlight", "capturePayment"})
+public Mono<Ticket> issueTicket(
+  @FromStep("reserveFlight") FlightReservation flight,
+  @FromStep("capturePayment") PaymentReceipt payment,
+  @Header("X-User-Id") String userId,
+  SagaContext ctx
+) {
+  // ... call downstream service using flight + payment + userId
+}
+```
+
+Engine behavior:
+- The engine inspects `method.getParameters()` and resolves each argument by annotation or by type (for `SagaContext`).
+- Backwards-compatible: legacy signatures still work: `(input, SagaContext)`, `(input)`, `(SagaContext)`, or `()`.
+- Validation at startup: if any parameter cannot be resolved, the registry fails fast with a clear error message. It also
+  validates that `@FromStep("id")` references an existing step and that `@Headers` is used with a `Map`-typed parameter.
+
+Result: many steps no longer require callers to pass step inputs explicitly.
 
 ## Limitations & non-goals
 - In-memory only: does not persist saga state or outbox messages.
