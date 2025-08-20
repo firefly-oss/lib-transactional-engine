@@ -7,6 +7,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -59,14 +60,28 @@ public class SagaRegistry {
             for (Method m : targetClass.getMethods()) {
                 SagaStep stepAnn = m.getAnnotation(SagaStep.class);
                 if (stepAnn == null) continue;
+                long backoffMs = 0L;
+                long timeoutMs = 0L;
+                if (StringUtils.hasText(stepAnn.backoff())) {
+                    try { backoffMs = Duration.parse(stepAnn.backoff()).toMillis(); } catch (Exception ignored) {}
+                } else {
+                    backoffMs = stepAnn.backoffMs();
+                }
+                if (StringUtils.hasText(stepAnn.timeout())) {
+                    try { timeoutMs = Duration.parse(stepAnn.timeout()).toMillis(); } catch (Exception ignored) {}
+                } else {
+                    timeoutMs = stepAnn.timeoutMs();
+                }
                 StepDefinition stepDef = new StepDefinition(
                         stepAnn.id(),
                         stepAnn.compensate(),
                         List.of(stepAnn.dependsOn()),
                         stepAnn.retry(),
-                        stepAnn.backoffMs(),
-                        stepAnn.timeoutMs(),
+                        backoffMs,
+                        timeoutMs,
                         stepAnn.idempotencyKey(),
+                        stepAnn.jitter(),
+                        stepAnn.jitterFactor(),
                         m
                 );
                 // Resolve invocation method on the actual bean class (proxy-safe)

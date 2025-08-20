@@ -15,6 +15,20 @@ public class SagaLoggerEvents implements SagaEvents {
     }
 
     @Override
+    public void onStart(String sagaName, String sagaId, com.catalis.transactionalengine.core.SagaContext ctx) {
+        if (ctx == null) {
+            log.info("saga_event=start_ctx saga={} sagaId={} headers_count=0", sagaName, sagaId);
+        } else {
+            log.info("saga_event=start_ctx saga={} sagaId={} headers_count={}", sagaName, sagaId, ctx.headers().size());
+        }
+    }
+
+    @Override
+    public void onStepStarted(String sagaName, String sagaId, String stepId) {
+        log.info("saga_event=step_started saga={} sagaId={} stepId={}", sagaName, sagaId, stepId);
+    }
+
+    @Override
     public void onStepSuccess(String sagaName, String sagaId, String stepId, int attempts, long latencyMs) {
         log.info("saga_event=step_success saga={} sagaId={} stepId={} attempts={} latencyMs={}", sagaName, sagaId, stepId, attempts, latencyMs);
     }
@@ -27,6 +41,11 @@ public class SagaLoggerEvents implements SagaEvents {
     @Override
     public void onCompensated(String sagaName, String sagaId, String stepId, Throwable error) {
         log.info("saga_event=compensated saga={} sagaId={} stepId={} error={} ", sagaName, sagaId, stepId, error == null ? "" : error.toString());
+    }
+
+    @Override
+    public void onStepSkippedIdempotent(String sagaName, String sagaId, String stepId) {
+        log.info("saga_event=step_skipped_idempotent saga={} sagaId={} stepId={}", sagaName, sagaId, stepId);
     }
 
     @Override
