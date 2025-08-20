@@ -2,6 +2,7 @@ package com.catalis.transactionalengine.it;
 
 import com.catalis.transactionalengine.annotations.*;
 import com.catalis.transactionalengine.core.SagaContext;
+import com.catalis.transactionalengine.core.SagaResult;
 import com.catalis.transactionalengine.engine.SagaEngine;
 import com.catalis.transactionalengine.engine.StepInputs;
 import com.catalis.transactionalengine.registry.SagaRegistry;
@@ -64,10 +65,11 @@ class ParameterInjectionIT {
                 .forStepId("c1", Map.of("extra", "E"))
                 .build();
 
-        var results = engine.run("ParamSaga", inputs, sctx).block();
-        assertNotNull(results);
-        assertEquals("R1", results.get("r1"));
-        assertTrue(((String) results.get("p1")).startsWith("P1:R1:u1:"));
-        assertEquals("C1:u1:E", results.get("c1"));
+        SagaResult result = engine.execute("ParamSaga", inputs, sctx).block();
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("R1", result.resultOf("r1", String.class).orElse(null));
+        assertTrue(result.resultOf("p1", String.class).orElse("").startsWith("P1:R1:u1:"));
+        assertEquals("C1:u1:E", result.resultOf("c1", String.class).orElse(null));
     }
 }

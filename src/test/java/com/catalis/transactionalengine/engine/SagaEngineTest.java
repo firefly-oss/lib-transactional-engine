@@ -1,23 +1,22 @@
 package com.catalis.transactionalengine.engine;
 
 import com.catalis.transactionalengine.core.SagaContext;
+import com.catalis.transactionalengine.core.SagaResult;
 import com.catalis.transactionalengine.core.StepStatus;
 import com.catalis.transactionalengine.observability.SagaEvents;
 import com.catalis.transactionalengine.registry.SagaBuilder;
 import com.catalis.transactionalengine.registry.SagaDefinition;
 import com.catalis.transactionalengine.registry.SagaRegistry;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
 
 class SagaEngineTest {
 
@@ -37,6 +36,7 @@ class SagaEngineTest {
 
     @Test
     void successFlowStoresResultsAndEvents() {
+        // Given a simple saga with two steps in sequence
         SagaDefinition def = SagaBuilder.saga("S").
                 step("a").handler((StepHandler<String, String>) (input, ctx) -> Mono.just("A-"+input)).add().
                 step("b").dependsOn("a").handler((StepHandler<Void, String>) (input, ctx) -> Mono.just("B" + ctx.getResult("a"))).add()
@@ -45,11 +45,16 @@ class SagaEngineTest {
         TestEvents events = new TestEvents();
         SagaEngine engine = newEngine(events);
         SagaContext ctx = new SagaContext("corr1");
+        StepInputs inputs = StepInputs.builder().forStepId("a", "in").build();
 
-        Map<String, Object> results = engine.run(def, Map.of("a", "in"), ctx).block();
-        assertNotNull(results);
-        assertEquals("A-in", results.get("a"));
-        assertEquals("BA-in", results.get("b"));
+        // When executing the saga via the new API
+        SagaResult result = engine.execute(def, inputs, ctx).block();
+
+        // Then results are stored and events emitted
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("A-in", result.resultOf("a", String.class).orElse(null));
+        assertEquals("BA-in", result.resultOf("b", String.class).orElse(null));
 
         assertEquals(StepStatus.DONE, ctx.getStatus("a"));
         assertEquals(StepStatus.DONE, ctx.getStatus("b"));
@@ -60,8 +65,9 @@ class SagaEngineTest {
 
     @Test
     void retryBackoffWorks() {
+        // Given a step that fails twice before succeeding, with backoff using the new Duration API
         SagaDefinition def = SagaBuilder.saga("R").
-                step("r").retry(2).backoffMs(1).handler(new StepHandler<Void, String>() {
+                step("r").retry(2).backoff(Duration.ofMillis(1)).handler(new StepHandler<Void, String>() {
                     final AtomicInteger attempts = new AtomicInteger();
                     @Override public Mono<String> execute(Void input, SagaContext ctx) {
                         int n = attempts.incrementAndGet();
@@ -74,8 +80,9 @@ class SagaEngineTest {
         SagaEngine engine = newEngine(events);
         SagaContext ctx = new SagaContext();
 
-        Map<String, Object> res = engine.run(def, Map.of(), ctx).block();
+        SagaResult res = engine.execute(def, StepInputs.builder().build(), ctx).block();
         assertNotNull(res);
+        assertTrue(res.isSuccess());
 
         assertEquals(3, ctx.getAttempts("r")); // 1 initial + 2 retries
         assertTrue(events.calls.stream().anyMatch(s -> s.equals("success:r:attempts=3")));
@@ -83,15 +90,18 @@ class SagaEngineTest {
 
     @Test
     void timeoutFailsStep() {
+        // Given a slow step with a short timeout using the new Duration API
         SagaDefinition def = SagaBuilder.saga("T").
-                step("slow").timeoutMs(50).handler((StepHandler<Void, String>) (input, ctx) -> Mono.delay(Duration.ofMillis(200)).thenReturn("late")).add()
+                step("slow").timeout(Duration.ofMillis(50)).handler((StepHandler<Void, String>) (input, ctx) -> Mono.delay(Duration.ofMillis(200)).thenReturn("late")).add()
                 .build();
 
         TestEvents events = new TestEvents();
         SagaEngine engine = newEngine(events);
         SagaContext ctx = new SagaContext();
 
-        assertThrows(RuntimeException.class, () -> engine.run(def, Map.of(), ctx).block());
+        SagaResult result = engine.execute(def, StepInputs.builder().build(), ctx).block();
+        assertNotNull(result);
+        assertFalse(result.isSuccess());
 
         assertEquals(StepStatus.FAILED, ctx.getStatus("slow"));
         assertTrue(events.calls.stream().anyMatch(s -> s.startsWith("failed:slow")));
@@ -130,7 +140,9 @@ class SagaEngineTest {
         SagaEngine engine = newEngine(events);
         SagaContext ctx = new SagaContext();
 
-        assertThrows(RuntimeException.class, () -> engine.run(def, Map.of(), ctx).block());
+        SagaResult result = engine.execute(def, StepInputs.builder().build(), ctx).block();
+        assertNotNull(result);
+        assertFalse(result.isSuccess());
 
         assertTrue(executed.contains("a") && executed.contains("b"));
         // reverse of completion order; since a and b run concurrently, order of completion is non-deterministic
@@ -151,8 +163,9 @@ class SagaEngineTest {
         SagaContext ctx = new SagaContext();
         ctx.markIdempotent("key1");
 
-        Map<String, Object> res2 = engine.run(def, Map.of(), ctx).block();
+        SagaResult res2 = engine.execute(def, StepInputs.builder().build(), ctx).block();
         assertNotNull(res2);
+        assertTrue(res2.isSuccess());
 
         assertEquals(0, ctx.getAttempts("x"));
         assertEquals(StepStatus.DONE, ctx.getStatus("x")); // marked done even if skipped

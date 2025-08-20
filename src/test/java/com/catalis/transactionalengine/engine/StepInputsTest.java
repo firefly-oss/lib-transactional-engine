@@ -1,14 +1,13 @@
 package com.catalis.transactionalengine.engine;
 
 import com.catalis.transactionalengine.core.SagaContext;
+import com.catalis.transactionalengine.core.SagaResult;
 import com.catalis.transactionalengine.observability.SagaEvents;
 import com.catalis.transactionalengine.registry.SagaBuilder;
 import com.catalis.transactionalengine.registry.SagaDefinition;
 import com.catalis.transactionalengine.registry.SagaRegistry;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
-
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
@@ -23,6 +22,7 @@ class StepInputsTest {
 
     @Test
     void runWithStepInputsConcrete() {
+        // Given a saga with an explicit input for step 'a'
         SagaDefinition def = SagaBuilder.saga("S1").
                 step("a").handler((StepHandler<String, String>) (input, ctx) -> Mono.just("A-" + input)).add().
                 step("b").dependsOn("a").handler((StepHandler<Void, String>) (input, ctx) -> Mono.just("B" + ctx.getResult("a"))).add()
@@ -35,15 +35,18 @@ class StepInputsTest {
                 .forStepId("a", "in")
                 .build();
 
-        Map<String, Object> results = engine.run(def, inputs, ctx).block();
-        assertNotNull(results);
-        assertEquals("A-in", results.get("a"));
-        assertEquals("BA-in", results.get("b"));
+        // When executing via new API
+        SagaResult result = engine.execute(def, inputs, ctx).block();
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("A-in", result.resultOf("a", String.class).orElse(null));
+        assertEquals("BA-in", result.resultOf("b", String.class).orElse(null));
         assertEquals("A-in", ctx.getResult("a"));
     }
 
     @Test
     void runWithResolverBuildsInputFromContext() {
+        // Given a saga where step 'b' input is resolved from previous step result
         SagaDefinition def = SagaBuilder.saga("S2").
                 step("a").handler((StepHandler<Void, String>) (input, ctx) -> Mono.just("ra")).add().
                 step("b").dependsOn("a").handler((StepHandler<String, String>) (input, ctx) -> Mono.just(input)).add()
@@ -56,9 +59,10 @@ class StepInputsTest {
                 .forStepId("b", (c) -> ((String) c.getResult("a")) + "-x")
                 .build();
 
-        Map<String, Object> results = engine.run(def, inputs, ctx).block();
-        assertNotNull(results);
-        assertEquals("ra", results.get("a"));
-        assertEquals("ra-x", results.get("b"));
+        SagaResult result = engine.execute(def, inputs, ctx).block();
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("ra", result.resultOf("a", String.class).orElse(null));
+        assertEquals("ra-x", result.resultOf("b", String.class).orElse(null));
     }
 }

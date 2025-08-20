@@ -4,8 +4,10 @@ import com.catalis.transactionalengine.annotations.EnableTransactionalEngine;
 import com.catalis.transactionalengine.annotations.Saga;
 import com.catalis.transactionalengine.annotations.SagaStep;
 import com.catalis.transactionalengine.core.SagaContext;
+import com.catalis.transactionalengine.core.SagaResult;
 import com.catalis.transactionalengine.core.StepStatus;
 import com.catalis.transactionalengine.engine.SagaEngine;
+import com.catalis.transactionalengine.engine.StepInputs;
 import com.catalis.transactionalengine.observability.SagaEvents;
 import com.catalis.transactionalengine.registry.SagaRegistry;
 import org.junit.jupiter.api.AfterEach;
@@ -19,7 +21,6 @@ import reactor.test.StepVerifier;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -89,10 +90,11 @@ class FunctionalSagaIT {
         SagaEngine engine = ctx.getBean(SagaEngine.class);
         SagaContext sctx = new SagaContext("corr-func-1");
 
-        Map<String, Object> results = engine.run("FuncSuccess", Map.of(), sctx).block();
-        assertNotNull(results);
-        assertEquals("A", results.get("a"));
-        assertEquals("B:A", results.get("b"));
+        SagaResult result = engine.execute("FuncSuccess", StepInputs.builder().build(), sctx).block();
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("A", result.resultOf("a", String.class).orElse(null));
+        assertEquals("B:A", result.resultOf("b", String.class).orElse(null));
         assertEquals(StepStatus.DONE, sctx.getStatus("a"));
         assertEquals(StepStatus.DONE, sctx.getStatus("b"));
 
@@ -108,9 +110,9 @@ class FunctionalSagaIT {
         SagaEngine engine = ctx.getBean(SagaEngine.class);
         SagaContext sctx = new SagaContext("corr-func-2");
 
-        StepVerifier.create(engine.run("FuncFail", Map.of(), sctx))
-                .expectError()
-                .verify();
+        StepVerifier.create(engine.execute("FuncFail", StepInputs.builder().build(), sctx))
+                .assertNext(r -> assertFalse(r.isSuccess()))
+                .verifyComplete();
 
         // x should be compensated; y failed
         assertEquals(StepStatus.COMPENSATED, sctx.getStatus("x"));
