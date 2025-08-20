@@ -93,30 +93,97 @@ flowchart LR
   - No persistence of saga state. Simple and fast within a single JVM process
 
 ## Architecture at a glance
-Before diving into code, here’s the mental model for how this library integrates with your Spring Boot app. The registry discovers your @Saga classes and steps at startup; the engine executes the DAG at runtime, propagates context into outbound calls, and emits lifecycle events for logs/metrics. Use this map to orient yourself before the Quick start and How it works sections:
+This section is a quick, visual guide to how everything fits together. It is designed to be read in under 3 minutes. If you want the in‑depth mechanics, see "How it works" just below.
 
+TL;DR
+- You write a Saga class with @Saga and @SagaStep methods.
+- At startup, SagaRegistry scans and validates your Sagas.
+- At runtime, SagaEngine executes the DAG layer by layer, stores results in SagaContext, emits SagaEvents, and propagates headers to outbound calls via HttpCall.
+
+Layered view (what exists in your app)
 ```mermaid
-flowchart LR
-  subgraph App[Your Spring Boot App]
-    O[Orchestrator - Saga]
-    R[SagaRegistry]
-    E[SagaEngine]
+flowchart TB
+  A[1. EnableTransactionalEngine] --> B[2. TransactionalEngineConfiguration]
+  B --> C[3. SagaRegistry]
+  B --> D[4. SagaEngine]
+  B --> E[5. StepLoggingAspect]
+  B --> F[6. SagaEvents]
+  subgraph G[Your Sagas]
+    S[Saga class with SagaStep methods]
   end
-
-  O -- SagaStep methods --> R
-  R -- builds metadata --> E
-  E -- executes steps --> S1[Service A]
-  E -- executes steps --> S2[Service B]
-  E -- emits events --> EV[SagaEvents]
-
-  ctx[SagaContext\ncorrelation id, headers, results] --- E
-  EV -. logs and metrics .-> Log[(Logs and Monitoring)]
+  C --- S
+  H[7. SagaContext per run] --- D
+  D --> I[8. Outbound calls via HttpCall]
 ```
 
-- The registry scans for @Saga classes and @SagaStep methods at startup.
-- The engine builds layers from the step DAG and runs steps concurrently per layer.
-- SagaContext carries correlation and headers into outbound calls (HTTP, messaging).
-- SagaEvents provides hooks for logs/metrics/tracing.
+How to read this
+- Numbers indicate the order you typically encounter the parts:
+  1) Turn on the engine, 2) Spring wires beans, 3) registry sees your saga, 4) engine orchestrates, 5) optional aspect logs, 6) events for observability, 7) per-run context, 8) outgoing calls.
+- Solid arrows are wiring/execution paths; dotted lines are references.
+
+Runtime sequence for a single step
+```mermaid
+sequenceDiagram
+  participant Caller as YourService
+  participant Engine as SagaEngine
+  participant Saga as Saga class
+  participant Ctx as SagaContext
+  participant Events as SagaEvents
+  participant IO as HttpCall/WebClient
+
+  Caller->>Engine: execute(sagaName, StepInputs, Ctx)
+  Engine->>Saga: invoke @SagaStep method
+  Saga->>IO: HTTP call wrapped by HttpCall.propagate(..., Ctx)
+  IO-->>Saga: response
+  Saga-->>Engine: result
+  Engine->>Ctx: store result/status/latency
+  Engine->>Events: onStepSuccess/onStepFailed
+  Engine-->>Caller: SagaResult
+```
+
+Mental map of components
+```mermaid
+flowchart LR
+  subgraph Spring
+    CFG[EnableTransactionalEngine]
+    CONF[TransactionalEngineConfiguration]
+    REG[SagaRegistry]
+    ENG[SagaEngine]
+    AOP[StepLoggingAspect]
+    OBS[SagaEvents]
+  end
+  subgraph Runtime
+    CTX[SagaContext]
+    IO[HttpCall]
+  end
+  subgraph YourCode
+    ORC[Saga class]
+  end
+  CFG --> CONF
+  CONF --> REG
+  CONF --> ENG
+  CONF --> AOP
+  CONF --> OBS
+  ORC --- REG
+  ENG --- CTX
+  ENG --> OBS
+  ENG --> ORC
+  ENG --> IO
+```
+
+Glossary (short and practical)
+- SagaRegistry: scans @Saga beans, indexes @SagaStep methods, validates the DAG (no cycles, valid dependsOn, compensations exist).
+- SagaEngine: runs the DAG in layers; applies retry, backoff, timeout, idempotency; compensates on failure; emits events.
+- SagaContext: per-run state (correlation id, headers, per-step status/attempts/latency/results, idempotency keys).
+- StepInputs: your typed inputs per step; supports lazy resolvers that evaluate against SagaContext right before execution.
+- SagaEvents: callbacks to integrate with logs/metrics/traces (default is SagaLoggerEvents).
+- StepLoggingAspect: optional AOP that logs raw step invocation latency.
+- HttpCall: tiny helper to propagate correlation/custom headers to WebClient.
+
+Where to go deeper
+- See "How it works" for discovery, DAG layering, retries/backoff/timeout, and compensation semantics.
+- See the Annotations reference for exact attributes and supported method signatures.
+- See the tutorial for a full end‑to‑end example with visuals and troubleshooting tips.
 
 ## How it works
 - Discovery
