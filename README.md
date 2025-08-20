@@ -555,7 +555,7 @@ New approach:
   class TravelSaga { /* ... */ }
   ```
 - `@SagaStep` additions:
-  - `timeout` and `backoff`: ISO-8601 duration strings (e.g., `"PT2S"` for 2s, `"PT300MS"` for 300ms). Prefer these over `timeoutMs`/`backoffMs` (deprecated but still supported).
+  - Duration configuration: annotation-based duration fields (timeout/backoff) are deprecated. Prefer SagaBuilder's `timeout(Duration)` / `backoff(Duration)` or rely on defaults (backoff 100ms, timeout disabled). Legacy `timeoutMs`/`backoffMs` are still accepted for backward compatibility.
   - `jitter` and `jitterFactor` (0..1): randomize retry backoff by ±factor. For example, `backoff=1000ms`, `jitter=true`, `jitterFactor=0.5` yields a delay in `[500, 1500]` ms.
   - `cpuBound`: hint that the step is CPU-intensive; the engine will schedule it on Reactor's parallel scheduler.
   - `idempotencyKey`: unchanged; when present, the step can be skipped within the same run if the key was already marked.
