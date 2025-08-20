@@ -22,6 +22,7 @@ public class StepDefinition {
     public final String idempotencyKey;
     public final boolean jitter;
     public final double jitterFactor;
+    public final boolean cpuBound;
     public final Method stepMethod; // method discovered on target class (for metadata)
     public Method stepInvocationMethod; // method to invoke on the bean (proxy-safe)
     public Method compensateMethod; // discovered on target class (for metadata)
@@ -38,6 +39,7 @@ public class StepDefinition {
                           String idempotencyKey,
                           boolean jitter,
                           double jitterFactor,
+                          boolean cpuBound,
                           Method stepMethod) {
         this.id = id;
         this.compensateName = compensateName;
@@ -48,6 +50,7 @@ public class StepDefinition {
         this.idempotencyKey = idempotencyKey;
         this.jitter = jitter;
         this.jitterFactor = jitterFactor;
+        this.cpuBound = cpuBound;
         this.stepMethod = stepMethod;
     }
 }

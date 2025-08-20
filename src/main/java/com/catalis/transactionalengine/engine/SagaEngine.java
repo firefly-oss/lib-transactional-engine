@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -35,6 +36,9 @@ import java.util.stream.Collectors;
  * - Emit lifecycle events to {@link com.catalis.transactionalengine.observability.SagaEvents} for observability.
  */
 public class SagaEngine {
+
+    // Cache for parameter resolution strategies per method to avoid repeated annotation scans
+    private final Map<Method, ArgResolver[]> argResolverCache = new ConcurrentHashMap<>();
 
     public enum CompensationPolicy {
         STRICT_SEQUENTIAL,
@@ -116,19 +120,14 @@ public class SagaEngine {
                         // Skip remaining layers but allow finalization (onCompleted/compensation) to run
                         return Mono.empty();
                     }
-                    // run all in parallel within layer
-                    List<Mono<Void>> executions = layer.stream().map(stepId ->
-                            executeStep(sagaName, saga, stepId, stepInputs != null ? stepInputs.get(stepId) : null, ctx)
-                                    .doOnSuccess(res -> completionOrder.add(stepId))
-                                    .onErrorResume(err -> {
-                                        failed.set(true);
-                                        stepErrors.put(stepId, err);
-                                        // Swallow the error here so the layer completes and finalization executes
-                                        return Mono.empty();
-                                    })
-                    ).toList();
-                    // No need to delay errors since we swallow them; when works fine
-                    return Mono.when(executions);
+                    int concurrency = saga.layerConcurrency > 0 ? saga.layerConcurrency : layer.size();
+                    return Flux.fromIterable(layer)
+                            .flatMap(stepId ->
+                                    executeStep(sagaName, saga, stepId, stepInputs != null ? stepInputs.get(stepId) : null, ctx)
+                                            .doOnSuccess(res -> completionOrder.add(stepId))
+                                            .onErrorResume(err -> { failed.set(true); stepErrors.put(stepId, err); return Mono.empty(); })
+                                    , concurrency)
+                            .then();
                 })
                 .then(Mono.defer(() -> {
                     boolean success = !failed.get();
@@ -170,17 +169,14 @@ public class SagaEngine {
                     if (failed.get()) {
                         return Mono.empty();
                     }
-                    // run all in parallel within layer
-                    List<Mono<Void>> executions = layer.stream().map(stepId ->
-                            executeStep(sagaName, saga, stepId, inputs != null ? inputs.resolveFor(stepId, ctx) : null, ctx)
-                                    .doOnSuccess(res -> completionOrder.add(stepId))
-                                    .onErrorResume(err -> {
-                                        failed.set(true);
-                                        stepErrors.put(stepId, err);
-                                        return Mono.empty();
-                                    })
-                    ).toList();
-                    return Mono.when(executions);
+                    int concurrency = saga.layerConcurrency > 0 ? saga.layerConcurrency : layer.size();
+                    return Flux.fromIterable(layer)
+                            .flatMap(stepId ->
+                                    executeStep(sagaName, saga, stepId, inputs != null ? inputs.resolveFor(stepId, ctx) : null, ctx)
+                                            .doOnSuccess(res -> completionOrder.add(stepId))
+                                            .onErrorResume(err -> { failed.set(true); stepErrors.put(stepId, err); return Mono.empty(); })
+                                    , concurrency)
+                            .then();
                 })
                 .then(Mono.defer(() -> {
                     boolean success = !failed.get();
@@ -349,6 +345,9 @@ public class SagaEngine {
             Method invokeMethod = sd.stepInvocationMethod != null ? sd.stepInvocationMethod : sd.stepMethod;
             execution = attemptCall(saga.bean, invokeMethod, sd.stepMethod, input, ctx, sd.timeoutMs, sd.retry, sd.backoffMs, sd.jitter, sd.jitterFactor, stepId);
         }
+        if (sd.cpuBound) {
+            execution = execution.subscribeOn(Schedulers.parallel());
+        }
         return execution
                 .doOnNext(res -> ctx.putResult(stepId, res))
                 .then()
@@ -477,63 +476,74 @@ public class SagaEngine {
     }
 
     private Object[] resolveArguments(Method method, Object input, SagaContext ctx) {
+        ArgResolver[] resolvers = argResolverCache.computeIfAbsent(method, this::compileArgResolvers);
+        Object[] args = new Object[resolvers.length];
+        for (int i = 0; i < resolvers.length; i++) {
+            args[i] = resolvers[i].resolve(input, ctx);
+        }
+        return args;
+    }
+
+    private ArgResolver[] compileArgResolvers(Method method) {
         var params = method.getParameters();
-        if (params.length == 0) return new Object[0];
-        Object[] args = new Object[params.length];
-        boolean implicitInputUsed = false;
+        if (params.length == 0) return new ArgResolver[0];
+        ArgResolver[] resolvers = new ArgResolver[params.length];
+        boolean implicitUsed = false;
         for (int i = 0; i < params.length; i++) {
             var p = params[i];
             Class<?> type = p.getType();
 
-            // Type-based injection for SagaContext
             if (SagaContext.class.isAssignableFrom(type)) {
-                args[i] = ctx;
+                resolvers[i] = (in, c) -> c;
                 continue;
             }
 
-            // Annotation-based resolution
             var inputAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Input.class);
             if (inputAnn != null) {
                 String key = inputAnn.value();
                 if (key == null || key.isBlank()) {
-                    args[i] = input;
-                } else if (input instanceof Map<?, ?> m) {
-                    args[i] = m.get(key);
+                    resolvers[i] = (in, c) -> in;
                 } else {
-                    args[i] = null; // no map input; best-effort
+                    resolvers[i] = (in, c) -> (in instanceof Map<?, ?> m) ? m.get(key) : null;
                 }
                 continue;
             }
 
             var fromStepAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.FromStep.class);
             if (fromStepAnn != null) {
-                args[i] = ctx.getResult(fromStepAnn.value());
+                String ref = fromStepAnn.value();
+                resolvers[i] = (in, c) -> c.getResult(ref);
                 continue;
             }
 
             var headerAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Header.class);
             if (headerAnn != null) {
                 String name = headerAnn.value();
-                args[i] = ctx.headers().get(name);
+                resolvers[i] = (in, c) -> c.headers().get(name);
                 continue;
             }
 
             var headersAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Headers.class);
             if (headersAnn != null) {
-                args[i] = ctx.headers();
+                resolvers[i] = (in, c) -> c.headers();
                 continue;
             }
 
-            // Legacy implicit input injection: allow a single unannotated non-context parameter
-            if (!implicitInputUsed) {
-                args[i] = input;
-                implicitInputUsed = true;
+            if (!implicitUsed) {
+                resolvers[i] = (in, c) -> in;
+                implicitUsed = true;
             } else {
-                throw new IllegalStateException("Unresolvable parameter '" + p.getName() + "' at position " + i +
-                        " in method " + method + ". Use @Input/@FromStep/@Header/@Headers or SagaContext.");
+                String msg = "Unresolvable parameter '" + p.getName() + "' at position " + i +
+                        " in method " + method + ". Use @Input/@FromStep/@Header/@Headers or SagaContext.";
+                throw new IllegalStateException(msg);
             }
         }
-        return args;
+        return resolvers;
+    }
+
+    @FunctionalInterface
+    private interface ArgResolver {
+        Object resolve(Object input, SagaContext ctx);
     }
 
 /**

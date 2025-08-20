@@ -18,7 +18,7 @@ public class SagaBuilder {
     private final SagaDefinition saga;
 
     private SagaBuilder(String name) {
-        this.saga = new SagaDefinition(name, null, null);
+        this.saga = new SagaDefinition(name, null, null, 0);
     }
 
     public static SagaBuilder saga(String name) {
@@ -101,6 +101,7 @@ public class SagaBuilder {
                     idempotencyKey,
                     jitter,
                     jitterFactor,
+                    false,
                     stepMethod
             );
             sd.handler = handler;

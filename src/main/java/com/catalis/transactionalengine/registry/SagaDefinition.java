@@ -12,11 +12,14 @@ public class SagaDefinition {
     public final String name;
     public final Object bean; // original Spring bean (possibly proxy)
     public final Object target; // unwrapped target object for direct invocation
+    /** Optional cap for concurrent steps within a layer. 0 means unbounded. */
+    public final int layerConcurrency;
     public final Map<String, StepDefinition> steps = new LinkedHashMap<>();
 
-    public SagaDefinition(String name, Object bean, Object target) {
+    public SagaDefinition(String name, Object bean, Object target, int layerConcurrency) {
         this.name = name;
         this.bean = bean;
         this.target = target;
+        this.layerConcurrency = layerConcurrency;
     }
 }

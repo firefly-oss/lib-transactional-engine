@@ -48,4 +48,6 @@ public @interface SagaStep {
     @Deprecated
     long timeoutMs() default 0;
     String idempotencyKey() default "";
+    /** Hint that this step performs CPU-bound work and can be scheduled on a CPU scheduler. */
+    boolean cpuBound() default false;
 }

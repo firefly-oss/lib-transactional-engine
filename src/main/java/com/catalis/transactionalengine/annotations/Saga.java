@@ -14,4 +14,6 @@ import java.lang.annotation.*;
 @Documented
 public @interface Saga {
     String name();
+    /** Optional cap for the number of steps executed concurrently within the same layer. 0 means unbounded. */
+    int layerConcurrency() default 0;
 }

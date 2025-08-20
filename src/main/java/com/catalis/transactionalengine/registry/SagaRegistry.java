@@ -55,7 +55,7 @@ public class SagaRegistry {
             Saga sagaAnn = targetClass.getAnnotation(Saga.class);
             if (sagaAnn == null) continue; // safety
             String sagaName = sagaAnn.name();
-            SagaDefinition sagaDef = new SagaDefinition(sagaName, bean, bean);
+            SagaDefinition sagaDef = new SagaDefinition(sagaName, bean, bean, sagaAnn.layerConcurrency());
 
             for (Method m : targetClass.getMethods()) {
                 SagaStep stepAnn = m.getAnnotation(SagaStep.class);
@@ -82,6 +82,7 @@ public class SagaRegistry {
                         stepAnn.idempotencyKey(),
                         stepAnn.jitter(),
                         stepAnn.jitterFactor(),
+                        stepAnn.cpuBound(),
                         m
                 );
                 // Resolve invocation method on the actual bean class (proxy-safe)
