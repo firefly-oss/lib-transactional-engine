@@ -91,6 +91,7 @@ flowchart LR
 - **Execution model**
   - Builds a DAG from `dependsOn`; executes steps layer-by-layer
   - Steps in the same layer run concurrently
+  - Optional per-layer concurrency cap via `@Saga.layerConcurrency`
   - On failure, compensates completed steps in reverse completion order
 
 - **Per-step controls**
@@ -543,8 +544,37 @@ New approach:
 | Annotation | Purpose | Key attributes | Notes |
 | --- | --- | --- | --- |
 | `@EnableTransactionalEngine` | Enables the Transactional Engine Spring configuration: scans for `@Saga` beans, wires `SagaRegistry`, `SagaEngine`, default `SagaEvents`, and the `StepLoggingAspect`. | — | Add on a Spring `@Configuration` (often your `@SpringBootApplication`). |
-| `@Saga(name)` | Marks a class as an orchestrator with a human-friendly unique name. Use the same name when invoking `SagaEngine.execute(name, ...)`. | `name` (required) | Name must be unique across sagas. |
+| `@Saga(name)` | Marks a class as an orchestrator with a human-friendly unique name. Use the same name when invoking `SagaEngine.execute(name, ...)`. | `name` (required); `layerConcurrency` (optional) | Name must be unique across sagas. `layerConcurrency=0` means unbounded concurrency per layer. |
 | `@SagaStep` | Declares a saga step and its compensation. | `id` (required); `compensate` (required); `dependsOn[]`; `retry`; `backoffMs`; `timeoutMs`; `idempotencyKey` | Step and compensation method must be on the same class. |
+
+### Additional attributes and notes
+- `@Saga(name, layerConcurrency=...)`: optional cap for concurrent steps within the same topological layer. `0` means unbounded concurrency (default). Example:
+  ```java
+  @Saga(name = "TravelSaga", layerConcurrency = 2)
+  @Service
+  class TravelSaga { /* ... */ }
+  ```
+- `@SagaStep` additions:
+  - `timeout` and `backoff`: ISO-8601 duration strings (e.g., `"PT2S"` for 2s, `"PT300MS"` for 300ms). Prefer these over `timeoutMs`/`backoffMs` (deprecated but still supported).
+  - `jitter` and `jitterFactor` (0..1): randomize retry backoff by ±factor. For example, `backoff=1000ms`, `jitter=true`, `jitterFactor=0.5` yields a delay in `[500, 1500]` ms.
+  - `cpuBound`: hint that the step is CPU-intensive; the engine will schedule it on Reactor's parallel scheduler.
+  - `idempotencyKey`: unchanged; when present, the step can be skipped within the same run if the key was already marked.
+
+Example with new attributes:
+```java
+@SagaStep(
+  id = "reserveFlight",
+  compensate = "cancelFlight",
+  dependsOn = {"initBooking"},
+  retry = 2,
+  timeout = "PT2S",
+  backoff = "PT300MS",
+  jitter = true,
+  jitterFactor = 0.4,
+  cpuBound = false
+)
+public Mono<FlightRes> reserveFlight(@Input FlightReq in, SagaContext ctx) { /* ... */ }
+```
 
 Supported step method signatures
 - (InputType input, SagaContext ctx)
@@ -744,9 +774,12 @@ Migration
 ## Observability
 What is emitted and when
 - onStart(sagaName, sagaId): fired once at the beginning of a run.
+- onStart(sagaName, sagaId, ctx): same as above, but with access to SagaContext (used e.g. by tracing to inject X-Trace-Id header for propagation).
+- onStepStarted(sagaName, sagaId, stepId): when a step transitions to RUNNING.
 - onStepSuccess(sagaName, sagaId, stepId, attempts, latencyMs): after a step completes successfully.
 - onStepFailed(sagaName, sagaId, stepId, error, attempts, latencyMs): after the final failed attempt of a step.
 - onCompensated(sagaName, sagaId, stepId, error): emitted for both successful and failed compensations; error is null on success.
+- onStepSkippedIdempotent(sagaName, sagaId, stepId): when a step is skipped due to per-run idempotency (idempotencyKey already marked in this run).
 - onCompleted(sagaName, sagaId, success): fired once when the saga finishes (success=false if any step failed).
 
 Default implementation
@@ -776,6 +809,12 @@ class ObservabilityConfig {
   }
 }
 ```
+
+Auto-configuration and composition
+- TransactionalEngineConfiguration provides a composite SagaEvents by default. If you don’t declare your own SagaEvents bean, a CompositeSagaEvents is created that always includes the logger-based SagaLoggerEvents, and conditionally adds SagaMicrometerEvents and SagaTracingEvents when a MeterRegistry or Tracer bean is present.
+- Micrometer metrics: if io.micrometer.core.instrument.MeterRegistry is on the classpath and a bean is available, saga.step.* and saga.run.* meters are published automatically.
+- Tracing: if io.micrometer.tracing.Tracer is present, SagaTracingEvents creates a saga span and per-step spans. It also injects the current trace id into SagaContext headers as X-Trace-Id via onStart(saga, id, ctx), so HTTP clients can propagate it downstream.
+- Override behavior: declare your own @Bean SagaEvents to replace the composite entirely, or declare additional SagaEvents implementations and they will be added into the composite.
 
 Additional AOP logs
 - `StepLoggingAspect` wraps raw step method invocation and logs debug-level entries:
