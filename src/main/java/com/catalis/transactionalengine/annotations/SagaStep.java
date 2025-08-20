@@ -20,6 +20,10 @@ import java.lang.annotation.*;
  * Compensation method name must refer to a method on the same class. Compensation method signatures mirror the above;
  * when an argument is expected, the engine will pass either the original step input or the step result (if types match),
  * plus SagaContext when present. See README for details.
+ *
+ * Duration configuration:
+ * - Prefer using ISO-8601 strings for durations (e.g., "PT1S" for 1 second) in {@link #timeout()} and {@link #backoff()}.
+ * - Millisecond fields {@link #timeoutMs()} and {@link #backoffMs()} are kept for backward compatibility and are deprecated.
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
@@ -29,7 +33,19 @@ public @interface SagaStep {
     String compensate();
     String[] dependsOn() default {};
     int retry() default 0;
+    /** ISO-8601 duration string (e.g., "PT1S"). Preferred over timeoutMs. */
+    String timeout() default "";
+    /** ISO-8601 duration string (e.g., "PT100MS"). Preferred over backoffMs. */
+    String backoff() default "";
+    /** Optional jitter configuration: when true, backoff delay will be randomized by jitterFactor. */
+    boolean jitter() default false;
+    /** Jitter factor in range [0.0, 1.0]. e.g., 0.5 means +/-50% around backoff. */
+    double jitterFactor() default 0.5d;
+    /** Deprecated: use {@link #backoff()} */
+    @Deprecated
     long backoffMs() default 0;
+    /** Deprecated: use {@link #timeout()} */
+    @Deprecated
     long timeoutMs() default 0;
     String idempotencyKey() default "";
 }
