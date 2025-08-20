@@ -151,8 +151,8 @@ public class TravelBookingOrchestrator {
     this.notify   = builder.baseUrl("http://notify/api").build();
   }
 
-  // 1) Initialize booking (idempotent, fast)
-  @SagaStep(id = "initBooking", compensate = "markBookingFailed", timeoutMs = 2000)
+  // 1) Initialize booking (idempotent, fast) - using modern ISO-8601 duration
+  @SagaStep(id = "initBooking", compensate = "markBookingFailed", timeout = "PT2S")
   public Mono<String> initBooking(InitBookingCmd cmd, SagaContext ctx) {
     return HttpCall.propagate(
         docs.post().uri("/bookings").bodyValue(Map.of(
@@ -169,9 +169,9 @@ public class TravelBookingOrchestrator {
     ).retrieve().bodyToMono(Void.class);
   }
 
-  // 2) Reserve flight (retriable)
+  // 2) Reserve flight (retriable with jitter)
   @SagaStep(id = "reserveFlight", compensate = "cancelFlight", dependsOn = {"initBooking"},
-            retry = 2, backoffMs = 300, timeoutMs = 5000)
+            retry = 2, backoff = "PT300MS", timeout = "PT5S", jitter = true)
   public Mono<FlightRes> reserveFlight(FlightReq req, SagaContext ctx) {
     return HttpCall.propagate(
         flights.post().uri("/reservations").bodyValue(req), ctx
@@ -184,9 +184,9 @@ public class TravelBookingOrchestrator {
     ).retrieve().bodyToMono(Void.class);
   }
 
-  // 3) Reserve hotel (parallel to flight)
+  // 3) Reserve hotel (parallel to flight with jitter)
   @SagaStep(id = "reserveHotel", compensate = "cancelHotel", dependsOn = {"initBooking"},
-            retry = 2, backoffMs = 300, timeoutMs = 5000)
+            retry = 2, backoff = "PT300MS", timeout = "PT5S", jitter = true, jitterFactor = 0.3)
   public Mono<HotelRes> reserveHotel(HotelReq req, SagaContext ctx) {
     return HttpCall.propagate(
         hotels.post().uri("/reservations").bodyValue(req), ctx
@@ -199,9 +199,9 @@ public class TravelBookingOrchestrator {
     ).retrieve().bodyToMono(Void.class);
   }
 
-  // 4) Reserve car (optional). We'll demonstrate per-run idempotency.
+  // 4) Reserve car (optional, CPU-bound pricing calculation)
   @SagaStep(id = "reserveCar", compensate = "cancelCar", dependsOn = {"initBooking"},
-            idempotencyKey = "car:standard", timeoutMs = 4000)
+            idempotencyKey = "car:standard", timeout = "PT4S", cpuBound = true)
   public Mono<CarRes> reserveCar(CarReq req, SagaContext ctx) {
     return HttpCall.propagate(
         cars.post().uri("/reservations").bodyValue(req), ctx
@@ -216,7 +216,7 @@ public class TravelBookingOrchestrator {
 
   // 5) Capture payment after ALL reservations are confirmed
   @SagaStep(id = "capturePayment", compensate = "refundPayment",
-            dependsOn = {"reserveFlight", "reserveHotel", "reserveCar"}, timeoutMs = 6000)
+            dependsOn = {"reserveFlight", "reserveHotel", "reserveCar"}, timeout = "PT6S")
   public Mono<String> capturePayment(PaymentReq req, SagaContext ctx) {
     return HttpCall.propagate(
         payments.post().uri("/charges").bodyValue(req), ctx
@@ -230,7 +230,7 @@ public class TravelBookingOrchestrator {
   }
 
   // 6) Issue itinerary using parameter injection (modern approach)
-  @SagaStep(id = "issueItinerary", compensate = "revokeItinerary", dependsOn = {"capturePayment"}, timeoutMs = 3000)
+  @SagaStep(id = "issueItinerary", compensate = "revokeItinerary", dependsOn = {"capturePayment"}, timeout = "PT3S")
   public Mono<Itinerary> issueItinerary(
       @FromStep("initBooking") String bookingId,
       @FromStep("capturePayment") String chargeId,
@@ -297,11 +297,14 @@ Use `SagaEngine` to execute by name with typed `StepInputs` and receive a typed 
 
 ```java
 import com.catalis.transactionalengine.core.SagaContext;
+import com.catalis.transactionalengine.core.SagaResult;
 import com.catalis.transactionalengine.engine.SagaEngine;
+import com.catalis.transactionalengine.engine.StepInputs;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
-import java.util.Map;
+import java.time.Duration;
+import java.util.List;
 
 @Service
 public class TravelService {
@@ -309,23 +312,71 @@ public class TravelService {
 
   public TravelService(SagaEngine engine) { this.engine = engine; }
 
-  public Mono<Itinerary> bookTrip() {
+  public Mono<BookingResult> bookTrip(String customerId, String tripId) {
     SagaContext ctx = new SagaContext();
-    ctx.putHeader("X-User-Id", "u-123");
+    ctx.putHeader("X-User-Id", customerId);
     ctx.putHeader("X-Tenant", "eu-west");
+    ctx.putHeader("X-Request-Source", "web-ui");
 
     StepInputs inputs = StepInputs.builder()
-        .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
+        .forStepId("initBooking", new InitBookingCmd(customerId, tripId))
         .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
         .forStepId("reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1))
         .forStepId("reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"))
-        .forStepId("capturePayment", new PaymentReq("cust-100", 2_450_00, "USD"))
+        .forStepId("capturePayment", new PaymentReq(customerId, 2_450_00, "USD"))
         .build();
 
     return engine
         .execute("TravelBookingSaga", inputs, ctx)
-        .map(res -> res.resultOf("issueItinerary", Itinerary.class).orElse(null));
+        .map(this::processResult);
   }
+
+  private BookingResult processResult(SagaResult result) {
+    if (result.isSuccess()) {
+      // Extract typed results from successful execution
+      String bookingId = result.resultOf("initBooking", String.class).orElse("unknown");
+      Itinerary itinerary = result.resultOf("issueItinerary", Itinerary.class).orElse(null);
+      Duration totalDuration = result.duration();
+      
+      return new BookingResult(
+          true, 
+          bookingId, 
+          itinerary, 
+          null, 
+          totalDuration,
+          result.steps().size()
+      );
+    } else {
+      // Handle failure with detailed error information
+      String failedStep = result.firstErrorStepId().orElse("unknown");
+      List<String> compensatedSteps = result.compensatedSteps();
+      Throwable error = result.error().orElse(null);
+      
+      return new BookingResult(
+          false, 
+          null, 
+          null, 
+          new BookingError(failedStep, error, compensatedSteps),
+          result.duration(),
+          result.steps().size()
+      );
+    }
+  }
+
+  public record BookingResult(
+      boolean success,
+      String bookingId,
+      Itinerary itinerary,
+      BookingError error,
+      Duration executionTime,
+      int totalSteps
+  ) {}
+
+  public record BookingError(
+      String failedStep,
+      Throwable cause,
+      List<String> compensatedSteps
+  ) {}
 }
 ```
 
@@ -390,6 +441,16 @@ saga_event=step_success saga=TravelBookingSaga stepId=reserveFlight attempts=1 l
 saga_event=step_failed saga=TravelBookingSaga stepId=reserveHotel attempts=3 latencyMs=5000 error=...
 saga_event=completed saga=TravelBookingSaga success=false
 ```
+In addition to onStart(saga,id) and step success/failure events, the engine also publishes:
+- onStart(saga,id, ctx): with access to SagaContext for header propagation and tracing; the default tracing sink injects X-Trace-Id.
+- onStepStarted(saga,id,step): when a step transitions to RUNNING (useful for queue depth/concurrency metrics).
+- onStepSkippedIdempotent(saga,id,step): when a step is skipped due to per-run idempotency.
+
+Auto-configuration and composition:
+- If you don’t declare your own `SagaEvents` bean, a composite is created including the logger sink and, if available, `SagaMicrometerEvents` and `SagaTracingEvents` (wired when a `MeterRegistry` or `Tracer` bean is present).
+- Micrometer metrics include counters/timers like `saga.step.started`, `saga.step.completed{outcome=*}`, `saga.step.latency`, `saga.step.attempts`, and `saga.run.completed`.
+- Tracing creates a span for the saga and one per step, and injects `X-Trace-Id` into `SagaContext.headers()` for HTTP propagation.
+
 You can provide a custom `SagaEvents` bean to integrate with metrics/tracing. For low-level timings of raw method invocations, enable DEBUG for `StepLoggingAspect`.
 
 
