@@ -339,11 +339,13 @@ public class SagaEngine {
         final long start = System.currentTimeMillis();
 
         Mono<Object> execution;
+        long timeoutMs = sd.timeout != null ? sd.timeout.toMillis() : 0L;
+        long backoffMs = sd.backoff != null ? sd.backoff.toMillis() : 0L;
         if (sd.handler != null) {
-            execution = attemptCallHandler(sd, input, ctx, sd.timeoutMs, sd.retry, sd.backoffMs, sd.jitter, sd.jitterFactor, stepId);
+            execution = attemptCallHandler(sd, input, ctx, timeoutMs, sd.retry, backoffMs, sd.jitter, sd.jitterFactor, stepId);
         } else {
             Method invokeMethod = sd.stepInvocationMethod != null ? sd.stepInvocationMethod : sd.stepMethod;
-            execution = attemptCall(saga.bean, invokeMethod, sd.stepMethod, input, ctx, sd.timeoutMs, sd.retry, sd.backoffMs, sd.jitter, sd.jitterFactor, stepId);
+            execution = attemptCall(saga.bean, invokeMethod, sd.stepMethod, input, ctx, timeoutMs, sd.retry, backoffMs, sd.jitter, sd.jitterFactor, stepId);
         }
         if (sd.cpuBound) {
             execution = execution.subscribeOn(Schedulers.parallel());

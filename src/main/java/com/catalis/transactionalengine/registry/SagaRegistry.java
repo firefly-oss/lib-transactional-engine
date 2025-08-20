@@ -60,25 +60,26 @@ public class SagaRegistry {
             for (Method m : targetClass.getMethods()) {
                 SagaStep stepAnn = m.getAnnotation(SagaStep.class);
                 if (stepAnn == null) continue;
-                long backoffMs = 0L;
-                long timeoutMs = 0L;
-                if (StringUtils.hasText(stepAnn.backoff())) {
-                    try { backoffMs = Duration.parse(stepAnn.backoff()).toMillis(); } catch (Exception ignored) {}
-                } else {
-                    backoffMs = stepAnn.backoffMs();
+                Duration backoff = null;
+                Duration timeout = null;
+                // Prefer millis if provided for annotations; else consider legacy ISO-8601 strings; else defaults
+                if (stepAnn.backoffMs() > 0) {
+                    backoff = Duration.ofMillis(stepAnn.backoffMs());
+                } else if (StringUtils.hasText(stepAnn.backoff())) {
+                    try { backoff = Duration.parse(stepAnn.backoff()); } catch (Exception ignored) {}
                 }
-                if (StringUtils.hasText(stepAnn.timeout())) {
-                    try { timeoutMs = Duration.parse(stepAnn.timeout()).toMillis(); } catch (Exception ignored) {}
-                } else {
-                    timeoutMs = stepAnn.timeoutMs();
+                if (stepAnn.timeoutMs() > 0) {
+                    timeout = Duration.ofMillis(stepAnn.timeoutMs());
+                } else if (StringUtils.hasText(stepAnn.timeout())) {
+                    try { timeout = Duration.parse(stepAnn.timeout()); } catch (Exception ignored) {}
                 }
                 StepDefinition stepDef = new StepDefinition(
                         stepAnn.id(),
                         stepAnn.compensate(),
                         List.of(stepAnn.dependsOn()),
                         stepAnn.retry(),
-                        backoffMs,
-                        timeoutMs,
+                        backoff,
+                        timeout,
                         stepAnn.idempotencyKey(),
                         stepAnn.jitter(),
                         stepAnn.jitterFactor(),
