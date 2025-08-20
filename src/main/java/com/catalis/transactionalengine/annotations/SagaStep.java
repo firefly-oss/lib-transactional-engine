@@ -6,9 +6,13 @@ import java.lang.annotation.*;
  * Declares a SAGA step within an orchestrator. A step typically performs an external call.
  *
  * Supported method signatures:
- * - Two parameters: (InputType input, SagaContext ctx)
- * - One parameter: (InputType input) or (SagaContext ctx)
- * - Zero parameters
+ * - Multi-parameter injection supported via annotations on parameters:
+ *   - @Input or @Input("key") for step input (optionally from a Map)
+ *   - @FromStep("stepId") for another step's result
+ *   - @Header("X-User-Id") for a single header value
+ *   - @Headers for the full headers Map<String,String>
+ *   - SagaContext is injected by type
+ * - Backwards compatible with legacy styles: (input, SagaContext) | (input) | (SagaContext) | ().
  *
  * Return type:
  * - Preferably Reactor Mono<T>, but plain T is also supported (it will be wrapped).

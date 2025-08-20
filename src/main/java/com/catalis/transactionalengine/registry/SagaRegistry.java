@@ -89,6 +89,7 @@ public class SagaRegistry {
             }
 
             validateDag(sagaDef);
+            validateParameters(sagaDef);
             sagas.put(sagaName, sagaDef);
         }
         scanned = true;
@@ -146,6 +147,61 @@ public class SagaRegistry {
         }
         if (visited != saga.steps.size()) {
             throw new IllegalStateException("Cycle detected in saga '" + saga.name + "'");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void validateParameters(SagaDefinition saga) {
+        for (StepDefinition sd : saga.steps.values()) {
+            // Validate against the original target method to preserve parameter annotations (proxy methods may not carry them)
+            var method = sd.stepMethod;
+            int implicitInputs = 0;
+            var params = method.getParameters();
+            for (int i = 0; i < params.length; i++) {
+                var p = params[i];
+                Class<?> type = p.getType();
+
+                // Type-based resolvable: SagaContext
+                if (com.catalis.transactionalengine.core.SagaContext.class.isAssignableFrom(type)) {
+                    continue;
+                }
+
+                // Known annotations
+                var in = p.getAnnotation(com.catalis.transactionalengine.annotations.Input.class);
+                if (in != null) {
+                    // no extra validation (keyed input may or may not exist at runtime)
+                    continue;
+                }
+                var fs = p.getAnnotation(com.catalis.transactionalengine.annotations.FromStep.class);
+                if (fs != null) {
+                    String ref = fs.value();
+                    if (!saga.steps.containsKey(ref)) {
+                        throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " references missing step '" + ref + "'");
+                    }
+                    continue;
+                }
+                var h = p.getAnnotation(com.catalis.transactionalengine.annotations.Header.class);
+                if (h != null) {
+                    // Ensure we can pass a String to this parameter
+                    if (!type.isAssignableFrom(String.class)) {
+                        throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @Header expects type assignable from String but was " + type.getName());
+                    }
+                    continue;
+                }
+                var hs = p.getAnnotation(com.catalis.transactionalengine.annotations.Headers.class);
+                if (hs != null) {
+                    if (!java.util.Map.class.isAssignableFrom(type)) {
+                        throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @Headers expects a Map type but was " + type.getName());
+                    }
+                    continue;
+                }
+
+                // Unannotated and not SagaContext -> implicit input
+                implicitInputs++;
+                if (implicitInputs > 1) {
+                    throw new IllegalStateException("Step '" + sd.id + "' has more than one unannotated parameter; annotate with @Input/@FromStep/@Header/@Headers or use SagaContext");
+                }
+            }
         }
     }
 }
