@@ -41,6 +41,24 @@ The Transactional Engine is a small library that lets you declare Sagas using an
 
 It is designed to be simple, explicit and suitable for orchestrating cross-service operations in OpenCore Banking domains (payments, account operations, order flows, etc.).
 
+### Mission and value-added
+Our mission is to make cross-service transactions reliable and understandable without heavy infrastructure. This engine provides:
+- Lightweight orchestration in-process: no state store or queue required for basic flows.
+- Clarity by design: steps and compensations are explicit, with a validated DAG at startup.
+- Operational safety: per-step retries, backoff, timeouts, and per-run idempotency.
+- First-class observability: lifecycle events and optional tracing/metrics integrations.
+- Productive developer experience: a typed StepInputs DSL, a typed SagaResult, and parameter injection to minimize boilerplate.
+
+When to pick this engine
+- You need to orchestrate 2–10 external calls with clear dependencies and compensations.
+- You want explicit control and transparent failure/compensation behavior.
+- You prefer a simple library over a distributed workflow engine for these use cases.
+
+When not to pick it
+- You need durable, long-running workflows with external persistence and restarts.
+- You require exactly-once guarantees across services.
+- You need choreography/event-driven coordination instead of orchestration.
+
 ## The Saga pattern in 5 minutes
 Sagas are a pattern for achieving reliable outcomes across multiple services without using distributed ACID transactions. Each service performs a local transaction and publishes an event or returns a result. If something fails mid‑way, previously completed transactions are compensated by executing explicitly defined inverse operations.
 
@@ -79,7 +97,7 @@ flowchart LR
 - **Modern API (preferred)**
   - Type-safe `StepInputs` DSL with lazy resolvers
   - Typed `SagaResult` API with result and metadata access
-  - Multi-parameter injection with `@FromStep`, `@Header`, `@Headers`, `@Input` annotations
+  - Multi-parameter injection with `@FromStep`, `@Header`, `@Headers`, `@Input`, `@Variable`, `@Variables` annotations
   - Programmatic saga building with `SagaBuilder` for dynamic workflows
   - Duration-based configuration for readability (`timeout(Duration)`, `backoff(Duration)`)
 
@@ -99,7 +117,7 @@ flowchart LR
   - Per-run idempotency using `idempotencyKey` (skips the step within the same saga run)
 
 - **Context and results**
-  - `SagaContext` stores correlation id, outbound headers, per-step status/attempts/latency, and step results
+  - `SagaContext` stores correlation id, outbound headers, a general-purpose variables store, per-step status/attempts/latency, and step results
   - `SagaResult` provides a typed snapshot of execution results and metadata
 
 - **Observability**
@@ -190,6 +208,43 @@ Supported annotations:
 - `@Header(name)`: injects a specific header
 - `@Headers`: injects all headers as Map<String, String>
 - `@Input` or `@Input("key")`: injects the step input (or a value from a Map input)
+- `@Variable(name)`: injects a single variable from `SagaContext.variables()`
+- `@Variables`: injects the full variables map (`Map<String, Object>`)
+
+Tip: you can also annotate a step method with `@SetVariable("name")` to automatically store its return value into `SagaContext.variables()` under that name.
+
+Why this exists
+Parameter injection removes repetitive plumbing in step methods. Instead of fetching data from SagaContext by hand, you declare what you need and the engine provides it. This keeps signatures explicit, testable and self-documenting.
+
+Quick rules (cheat sheet)
+- Every parameter must be either annotated or be one of the special types the engine understands.
+- Special unannotated types: `SagaContext` only. Everything else should be annotated.
+- You can have at most one unannotated, non-SagaContext parameter: it will receive the step input (same as `@Input`). If you add a second such parameter, startup fails with a clear error.
+- `@Header` parameters must be `String`-typed; `@Headers` parameters must be Map-typed; `@Variables` parameters must be Map-typed. The registry validates this at startup.
+
+Simple example using variables and headers
+```java
+@SagaStep(id = "r1", compensate = "cr1")
+@SetVariable("userCountry")
+public Mono<String> r1() { return Mono.just("ES"); }
+public Mono<Void> cr1(String res) { return Mono.empty(); }
+
+@SagaStep(id = "p1", compensate = "cp1", dependsOn = {"r1"})
+public Mono<String> p1(@Variable("userCountry") String country,
+                       @Header("X-User-Id") String user,
+                       SagaContext ctx) {
+  ctx.putVariable("greeting", "hello:" + user);
+  return Mono.just("P:" + country);
+}
+public Mono<Void> cp1(String res, SagaContext ctx) { return Mono.empty(); }
+
+@SagaStep(id = "c1", compensate = "cc1", dependsOn = {"p1"})
+public Mono<String> c1(@Variables Map<String,Object> vars,
+                       @Input("extra") String extra) {
+  return Mono.just("C:" + vars.get("userCountry") + ":" + vars.get("greeting") + ":" + extra);
+}
+public Mono<Void> cc1(String res) { return Mono.empty(); }
+```
 
 ### Programmatic saga building
 Define sagas dynamically without annotations using a fluent builder:
@@ -436,16 +491,26 @@ public class PaymentService {
   public PaymentService(SagaEngine engine) { this.engine = engine; }
 
   public Mono<Long> process(ReserveCmd reserveCmd, CreateOrderCmd createCmd) {
-    SagaContext ctx = new SagaContext(); // auto-generates correlationId (UUID)
-    ctx.putHeader("X-User-Id", "123");   // propagate custom headers downstream
-
     StepInputs inputs = StepInputs.builder()
         .forStepId("reserveFunds", reserveCmd)
         .forStepId("createOrder", createCmd)
         .build();
 
     return engine
-        .execute("PaymentSaga", inputs, ctx)
+        .execute("PaymentSaga", inputs) // SagaContext is created automatically; its sagaName is set from @Saga.name
+        .map(r -> r.resultOf("createOrder", Long.class).orElse(null));
+  }
+
+  // If you need to pre-populate headers/correlationId, you can still pass your own SagaContext:
+  public Mono<Long> processWithHeaders(ReserveCmd reserveCmd, CreateOrderCmd createCmd) {
+    SagaContext ctx = new SagaContext(); // custom ctx (optional)
+    ctx.putHeader("X-User-Id", "123");   // propagate custom headers downstream
+
+    StepInputs inputs = StepInputs.builder()
+        .forStepId("reserveFunds", reserveCmd)
+        .forStepId("createOrder", createCmd)
+        .build();
+    return engine.execute("PaymentSaga", inputs, ctx)
         .map(r -> r.resultOf("createOrder", Long.class).orElse(null));
   }
 }
@@ -589,6 +654,8 @@ Parameter injection annotations
 - `@Header("name")`: injects a specific header
 - `@Headers`: injects all headers as Map<String, String>
 - `@Input` or `@Input("key")`: injects the step input (or a value from a Map input)
+- `@Variable("name")`: injects a single variable from `SagaContext.variables()`
+- `@Variables`: injects the full variables map (`Map<String, Object>`)
 
 Return types
 - Reactor Mono<T> preferred. Plain T is supported and will be wrapped using `Mono.justOrEmpty`.
@@ -699,8 +766,12 @@ Notes:
 To eliminate Map<String,Object> and stringly-typed step ids from the public API while increasing expressiveness, the engine provides a typed StepInputs DSL and a new execution API that returns a typed SagaResult.
 
 Preferred execution API:
+- Mono<SagaResult> execute(String sagaName, StepInputs inputs)
 - Mono<SagaResult> execute(String sagaName, StepInputs inputs, SagaContext ctx)
+- Mono<SagaResult> execute(SagaDefinition saga, StepInputs inputs)
 - Mono<SagaResult> execute(SagaDefinition saga, StepInputs inputs, SagaContext ctx)
+
+Note: When you omit the SagaContext, the engine will create one automatically and set its sagaName from the @Saga annotation. You can still pass your own SagaContext to preset headers or correlationId.
 
 Backward compatibility: Map-based run(...) overloads remain available but are deprecated and will be removed in a future release. Use execute(...) instead.
 
@@ -887,7 +958,21 @@ New annotations:
 - `@FromStep("stepId")`: injects the result of another step.
 - `@Header("X-User-Id")`: injects a single outbound header from `SagaContext.headers()`.
 - `@Headers`: injects the full headers map (`Map<String, String>`).
+- `@Variable("name")`: injects a single variable from `SagaContext.variables()`.
+- `@Variables`: injects the full variables map (`Map<String, Object>`).
 - `SagaContext` continues to be injected by type.
+
+Also handy:
+- `@SetVariable("name")` on a step method stores its return value into `SagaContext.variables()` under that name.
+
+Why this exists
+Parameter injection exists to keep step code focused on business logic. Instead of pulling values out of SagaContext by hand, you declare dependencies in the signature and the engine supplies them. This reduces boilerplate, improves readability, and makes signatures self-documenting.
+
+Quick rules (cheat sheet):
+- You can mix several annotated parameters; order doesn’t matter.
+- Special unannotated type: `SagaContext` only; otherwise annotate your parameters.
+- At most one unannotated non-`SagaContext` parameter is allowed — it receives the step input (same as `@Input`). More than one triggers a startup error.
+- Types must match: `@Header` -> String; `@Headers` -> Map; `@Variables` -> Map.
 
 Example:
 
@@ -910,6 +995,85 @@ Engine behavior:
   validates that `@FromStep("id")` references an existing step and that `@Headers` is used with a `Map`-typed parameter.
 
 Result: many steps no longer require callers to pass step inputs explicitly.
+
+### Detailed examples (per annotation)
+Below is a compact saga that showcases each supported parameter injection. The snippets are self-contained; focus on the method signatures and brief notes.
+
+```java
+@Saga(name = "InjectionShowcase")
+class InjectionExamples {
+  // 0) Setup: a header will be present in SagaContext (e.g., from caller code)
+  // ctx.putHeader("X-User-Id", "u-123");
+
+  // 1) @Input — whole input object (implicit or explicit)
+  @SagaStep(id = "wholeInput", compensate = "noop")
+  Mono<String> wholeInput(@Input MyReq req) {
+    return Mono.just("W:" + req.id());
+  }
+  Mono<Void> noop() { return Mono.empty(); }
+
+  // 2) @Input("key") — extract a value from a Map input
+  // Caller provides: StepInputs.builder().forStepId("mapInput", Map.of("city", "MAD")).build();
+  @SagaStep(id = "mapInput", compensate = "noop")
+  Mono<String> mapInput(@Input("city") String city) {
+    return Mono.just("City=" + city);
+  }
+
+  // 3) @FromStep("id") — inject result of another step
+  @SagaStep(id = "producer", compensate = "noop")
+  Mono<Integer> producer() { return Mono.just(42); }
+
+  @SagaStep(id = "consumer", compensate = "noop", dependsOn = {"producer"})
+  Mono<String> consumer(@FromStep("producer") Integer value) {
+    return Mono.just("V=" + value);
+  }
+
+  // 4) @Header("name") — inject one outbound header (must be String)
+  @SagaStep(id = "useHeader", compensate = "noop")
+  Mono<String> useHeader(@Header("X-User-Id") String userId) {
+    return Mono.just("User=" + userId);
+  }
+
+  // 5) @Headers — inject all headers as Map<String,String>
+  @SagaStep(id = "useHeaders", compensate = "noop")
+  Mono<String> useHeaders(@Headers Map<String,String> headers) {
+    return Mono.just("H=" + headers.getOrDefault("X-User-Id", "?"));
+  }
+
+  // 6) @SetVariable on a step method — store its return value into variables under the given name
+  @SagaStep(id = "computeCountry", compensate = "noop")
+  @SetVariable("country")
+  Mono<String> computeCountry() { return Mono.just("ES"); }
+
+  // 7) @Variable("name") — read a single variable
+  @SagaStep(id = "readCountry", compensate = "noop", dependsOn = {"computeCountry"})
+  Mono<String> readCountry(@Variable("country") String c) { return Mono.just("C=" + c); }
+
+  // 8) @Variables — read the entire variables map
+  @SagaStep(id = "readAllVars", compensate = "noop", dependsOn = {"readCountry"})
+  Mono<String> readAllVars(@Variables Map<String,Object> vars) {
+    return Mono.just("All=" + vars.keySet());
+  }
+
+  // 9) SagaContext — injected by type, unannotated
+  @SagaStep(id = "contextUsage", compensate = "noop")
+  Mono<String> contextUsage(SagaContext ctx) {
+    // Access correlationId/headers/variables directly if needed
+    return Mono.just(ctx.correlationId());
+  }
+}
+
+record MyReq(String id) {}
+```
+
+Explanations and tips:
+- @Input vs implicit input: If you omit @Input and the parameter is unannotated (and not SagaContext), the engine treats that one parameter as the step input. If you have more than one such unannotated parameter, startup fails.
+- @Input("key"): Only applies when the actual input is a Map; the engine fetches map.get("key").
+- @FromStep: The referenced step id must exist in the same saga; validated at startup.
+- @Header: The target parameter must be String-typed.
+- @Headers and @Variables: The target parameter must be Map-typed; validated at startup.
+- @SetVariable: Simplifies passing data across steps without adding headers or modifying inputs.
+- SagaContext: Always available by type for advanced access (headers(), variables(), getResult(), etc.).
 
 ## Limitations & non-goals
 - In-memory only: does not persist saga state or outbox messages.

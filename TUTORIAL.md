@@ -5,7 +5,7 @@ This tutorial is a hands-on, step-by-step deep dive into the Firefly Transaction
 **🚀 This tutorial focuses on the modern API features:**
 - **Typed StepInputs DSL** with lazy resolvers
 - **SagaResult API** for comprehensive execution results
-- **Parameter injection** using `@FromStep`, `@Header`, `@Headers`, `@Input` annotations
+- **Parameter injection** using `@FromStep`, `@Header`, `@Headers`, `@Input`, `@Variable`, `@Variables` annotations
 - **Duration-based configuration** for better readability
 - **Programmatic saga building** with `SagaBuilder`
 
@@ -352,6 +352,8 @@ public class TravelService {
         .execute("TravelBookingSaga", inputs, ctx)
         .map(this::processResult);
   }
+  // Tip: If you don't need to preset headers/correlationId, you can omit the SagaContext:
+  // return engine.execute("TravelBookingSaga", inputs).map(this::processResult);
 
   private BookingResult processResult(SagaResult result) {
     if (result.isSuccess()) {
@@ -650,7 +652,20 @@ The engine can inject values into step method parameters by reading annotations 
 - @Header("name"): inject a single outbound header
 - @Headers: inject all headers as Map<String,String>
 - @Input or @Input("key"): inject the step input (or a key from a Map input)
+- @Variable("name"): inject a variable from SagaContext.variables()
+- @Variables: inject the full variables map (Map<String,Object>)
 - SagaContext: injected by type
+
+Also handy: use @SetVariable("name") on a step method to store its return value into variables under that name.
+
+Why this exists
+Parameter injection eliminates boilerplate and makes step methods explicit about their dependencies. Declare what you need; the engine injects it.
+
+Quick rules (cheat sheet):
+- You can combine multiple annotations in one method signature; order doesn’t matter.
+- Only SagaContext can be left unannotated; other parameters should be annotated.
+- You can have at most one unannotated non-SagaContext parameter; it will receive the step input (same as @Input). More than one triggers a startup error.
+- Types must match: @Header -> String, @Headers -> Map, @Variables -> Map.
 
 Example in this travel saga:
 ```java
@@ -666,6 +681,67 @@ public Mono<Void> prepareDocs(
 }
 ```
 Validation rules are applied at startup so misconfigurations fail fast (unknown step ids, wrong parameter types for @Headers, etc.).
+
+### Detailed examples (per annotation)
+Each snippet below demonstrates one annotation in isolation, using short step methods.
+
+```java
+@Saga(name = "TravelParamExamples")
+class ParamExamples {
+  // Assume callers may set headers and we sometimes store variables.
+
+  // @Input — whole input
+  @SagaStep(id = "initBooking", compensate = "undoInit")
+  Mono<String> initBooking(@Input InitBookingCmd cmd) {
+    return Mono.just(cmd.tripId());
+  }
+  Mono<Void> undoInit(InitBookingCmd cmd) { return Mono.empty(); }
+
+  // @Input("key") — from Map input
+  // Inputs: StepInputs.builder().forStepId("cfg", Map.of("locale","en-US")).build();
+  @SagaStep(id = "cfg", compensate = "noop")
+  Mono<String> cfg(@Input("locale") String locale) { return Mono.just(locale); }
+  Mono<Void> noop() { return Mono.empty(); }
+
+  // @FromStep — use prior result
+  @SagaStep(id = "reserveFlight", compensate = "cancelFlight")
+  Mono<FlightRes> reserveFlight(FlightReq req) { return Mono.just(new FlightRes("FR-1")); }
+  Mono<Void> cancelFlight(FlightReq req) { return Mono.empty(); }
+
+  @SagaStep(id = "ticket", compensate = "revoke", dependsOn = {"reserveFlight"})
+  Mono<String> ticket(@FromStep("reserveFlight") FlightRes flight) { return Mono.just("T:" + flight.reservationId()); }
+  Mono<Void> revoke(String t) { return Mono.empty(); }
+
+  // @Header — single header
+  @SagaStep(id = "userTag", compensate = "noop")
+  Mono<String> userTag(@Header("X-User-Id") String user) { return Mono.just("U:" + user); }
+
+  // @Headers — all headers
+  @SagaStep(id = "audit", compensate = "noop")
+  Mono<Integer> audit(@Headers Map<String,String> headers) { return Mono.just(headers.size()); }
+
+  // @SetVariable + @Variable
+  @SagaStep(id = "country", compensate = "noop")
+  @SetVariable("country")
+  Mono<String> country() { return Mono.just("ES"); }
+
+  @SagaStep(id = "greet", compensate = "noop", dependsOn = {"country"})
+  Mono<String> greet(@Variable("country") String c) { return Mono.just("Hola-" + c); }
+
+  // @Variables — whole variables map
+  @SagaStep(id = "varsView", compensate = "noop", dependsOn = {"greet"})
+  Mono<String> varsView(@Variables Map<String,Object> vars) { return Mono.just(vars.keySet().toString()); }
+
+  // SagaContext — type-based injection
+  @SagaStep(id = "ctxUse", compensate = "noop")
+  Mono<String> ctxUse(SagaContext ctx) { return Mono.just(ctx.correlationId()); }
+}
+```
+
+Notes:
+- Use @SetVariable when a step’s output should be reused later without wiring it as an input.
+- @FromStep requires the referenced step id to exist and its result to be type-compatible with the parameter. Otherwise you’ll get a ClassCastException at runtime.
+- @Header/@Headers read from SagaContext.headers(), which you can pre-populate before calling engine.execute(...).
 
 ## 18) StepInputs DSL with lazy resolvers
 Prefer StepInputs.builder() over raw Map inputs. You can provide concrete values or lazy resolvers that will be evaluated right before the step runs and then cached for compensation.
