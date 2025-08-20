@@ -3,6 +3,7 @@ package com.catalis.transactionalengine.registry;
 import com.catalis.transactionalengine.engine.StepHandler;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -13,12 +14,15 @@ import java.util.List;
  * can be provided to execute the step without reflection.
  */
 public class StepDefinition {
+    public static final Duration DEFAULT_BACKOFF = Duration.ofMillis(100);
+    public static final Duration DEFAULT_TIMEOUT = Duration.ZERO; // 0 disables timeout to avoid breaking existing behavior
+
     public final String id;
     public final String compensateName;
     public final List<String> dependsOn;
     public final int retry;
-    public final long backoffMs;
-    public final long timeoutMs;
+    public final Duration backoff;
+    public final Duration timeout;
     public final String idempotencyKey;
     public final boolean jitter;
     public final double jitterFactor;
@@ -34,8 +38,8 @@ public class StepDefinition {
                           String compensateName,
                           List<String> dependsOn,
                           int retry,
-                          long backoffMs,
-                          long timeoutMs,
+                          Duration backoff,
+                          Duration timeout,
                           String idempotencyKey,
                           boolean jitter,
                           double jitterFactor,
@@ -45,8 +49,8 @@ public class StepDefinition {
         this.compensateName = compensateName;
         this.dependsOn = dependsOn;
         this.retry = retry;
-        this.backoffMs = backoffMs;
-        this.timeoutMs = timeoutMs;
+        this.backoff = backoff != null ? backoff : DEFAULT_BACKOFF;
+        this.timeout = timeout != null ? timeout : DEFAULT_TIMEOUT;
         this.idempotencyKey = idempotencyKey;
         this.jitter = jitter;
         this.jitterFactor = jitterFactor;

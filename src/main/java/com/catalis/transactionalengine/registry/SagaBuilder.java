@@ -51,8 +51,8 @@ public class SagaBuilder {
         private String compensateName = "";
         private final List<String> dependsOn = new ArrayList<>();
         private int retry = 0;
-        private long backoffMs = 0;
-        private long timeoutMs = 0;
+        private Duration backoff = null;
+        private Duration timeout = null;
         private String idempotencyKey = "";
         private boolean jitter = false;
         private double jitterFactor = 0.5d;
@@ -70,11 +70,11 @@ public class SagaBuilder {
 
         public Step retry(int retry) { this.retry = retry; return this; }
         @Deprecated
-        public Step backoffMs(long backoffMs) { this.backoffMs = backoffMs; return this; }
+        public Step backoffMs(long backoffMs) { this.backoff = backoffMs > 0 ? Duration.ofMillis(backoffMs) : null; return this; }
         @Deprecated
-        public Step timeoutMs(long timeoutMs) { this.timeoutMs = timeoutMs; return this; }
-        public Step backoff(Duration backoff) { this.backoffMs = backoff != null ? backoff.toMillis() : 0L; return this; }
-        public Step timeout(Duration timeout) { this.timeoutMs = timeout != null ? timeout.toMillis() : 0L; return this; }
+        public Step timeoutMs(long timeoutMs) { this.timeout = timeoutMs > 0 ? Duration.ofMillis(timeoutMs) : null; return this; }
+        public Step backoff(Duration backoff) { this.backoff = backoff; return this; }
+        public Step timeout(Duration timeout) { this.timeout = timeout; return this; }
         public Step idempotencyKey(String key) { this.idempotencyKey = key != null ? key : ""; return this; }
         public Step compensateName(String name) { this.compensateName = name != null ? name : ""; return this; }
         public Step handler(StepHandler<?,?> handler) { this.handler = handler; return this; }
@@ -96,8 +96,8 @@ public class SagaBuilder {
                     compensateName,
                     dependsOn,
                     retry,
-                    backoffMs,
-                    timeoutMs,
+                    backoff,
+                    timeout,
                     idempotencyKey,
                     jitter,
                     jitterFactor,

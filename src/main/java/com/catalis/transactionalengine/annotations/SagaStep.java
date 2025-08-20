@@ -21,9 +21,10 @@ import java.lang.annotation.*;
  * when an argument is expected, the engine will pass either the original step input or the step result (if types match),
  * plus SagaContext when present. See README for details.
  *
- * Duration configuration:
- * - Prefer using ISO-8601 strings for durations (e.g., "PT1S" for 1 second) in {@link #timeout()} and {@link #backoff()}.
- * - Millisecond fields {@link #timeoutMs()} and {@link #backoffMs()} are kept for backward compatibility and are deprecated.
+ * Duration configuration (updated):
+ * - ISO-8601 String-based fields timeout() and backoff() are deprecated.
+ * - Prefer setting durations via SagaBuilder's Duration-based methods or omit them to use defaults.
+ * - Defaults: backoff = 100ms; timeout = disabled (0). Use retry with backoff for resilience.
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
@@ -33,18 +34,20 @@ public @interface SagaStep {
     String compensate();
     String[] dependsOn() default {};
     int retry() default 0;
-    /** ISO-8601 duration string (e.g., "PT1S"). Preferred over timeoutMs. */
+    /** Deprecated: use programmatic Duration configuration via SagaBuilder or rely on defaults. */
+    @Deprecated
     String timeout() default "";
-    /** ISO-8601 duration string (e.g., "PT100MS"). Preferred over backoffMs. */
+    /** Deprecated: use programmatic Duration configuration via SagaBuilder or rely on defaults. */
+    @Deprecated
     String backoff() default "";
     /** Optional jitter configuration: when true, backoff delay will be randomized by jitterFactor. */
     boolean jitter() default false;
     /** Jitter factor in range [0.0, 1.0]. e.g., 0.5 means +/-50% around backoff. */
     double jitterFactor() default 0.5d;
-    /** Deprecated: use {@link #backoff()} */
+    /** Legacy: millisecond fields are still accepted. Prefer builder-based Duration or defaults. */
     @Deprecated
     long backoffMs() default 0;
-    /** Deprecated: use {@link #timeout()} */
+    /** Legacy: millisecond fields are still accepted. Prefer builder-based Duration or defaults. */
     @Deprecated
     long timeoutMs() default 0;
     String idempotencyKey() default "";
