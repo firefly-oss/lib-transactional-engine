@@ -1,8 +1,17 @@
 # Transactional Engine Deep‑Dive Tutorial — Orchestrating a Travel Booking Saga
 
-This tutorial is a hands-on, step-by-step deep dive into the Firefly Transactional Engine using a scenario that is completely different from the README’s example. We will orchestrate a Travel Booking Saga coordinating multiple services: Flights, Hotels, Car Rentals, Payments, and Notifications. You’ll see how to model a DAG of steps, run them with concurrency, deal with failure and compensation, propagate headers over HTTP, and reason about idempotency, retries, and timeouts.
+This tutorial is a hands-on, step-by-step deep dive into the Firefly Transactional Engine using a scenario that is completely different from the README's example. We will orchestrate a Travel Booking Saga coordinating multiple services: Flights, Hotels, Car Rentals, Payments, and Notifications. You'll see how to model a DAG of steps, run them with concurrency, deal with failure and compensation, propagate headers over HTTP, and reason about idempotency, retries, and timeouts.
 
-If you’re looking for the full reference, see README.md. Here we go deeper into the why and how with a realistic end-to-end flow.
+**🚀 This tutorial focuses on the modern API features:**
+- **Typed StepInputs DSL** with lazy resolvers
+- **SagaResult API** for comprehensive execution results
+- **Parameter injection** using `@FromStep`, `@Header`, `@Headers`, `@Input` annotations
+- **Duration-based configuration** for better readability
+- **Programmatic saga building** with `SagaBuilder`
+
+> **Note**: This tutorial uses the modern `execute()` API. The older `run()` API is deprecated but still functional. See the migration notes throughout for upgrading existing code.
+
+If you're looking for the full reference, see README.md. Here we go deeper into the why and how with a realistic end-to-end flow.
 
 
 ## 0) Prerequisites
@@ -220,14 +229,35 @@ public class TravelBookingOrchestrator {
     ).retrieve().bodyToMono(Void.class);
   }
 
-  // 6) Issue itinerary
+  // 6) Issue itinerary using parameter injection (modern approach)
   @SagaStep(id = "issueItinerary", compensate = "revokeItinerary", dependsOn = {"capturePayment"}, timeoutMs = 3000)
-  public Mono<Itinerary> issueItinerary(SagaContext ctx) {
-    String bookingId = (String) ctx.getResult("initBooking");
+  public Mono<Itinerary> issueItinerary(
+      @FromStep("initBooking") String bookingId,
+      @FromStep("capturePayment") String chargeId,
+      @Header("X-User-Id") String userId,
+      SagaContext ctx) {
     return HttpCall.propagate(
-        docs.post().uri("/itineraries").bodyValue(Map.of("bookingId", bookingId)), ctx
+        docs.post().uri("/itineraries").bodyValue(Map.of(
+            "bookingId", bookingId,
+            "chargeId", chargeId,
+            "userId", userId
+        )), ctx
     ).retrieve().bodyToMono(Itinerary.class);
   }
+
+  // Alternative: Traditional approach (still supported)
+  // public Mono<Itinerary> issueItinerary(SagaContext ctx) {
+  //   String bookingId = (String) ctx.getResult("initBooking");
+  //   String chargeId = (String) ctx.getResult("capturePayment");
+  //   String userId = ctx.headers().get("X-User-Id");
+  //   return HttpCall.propagate(
+  //       docs.post().uri("/itineraries").bodyValue(Map.of(
+  //           "bookingId", bookingId,
+  //           "chargeId", chargeId,
+  //           "userId", userId
+  //       )), ctx
+  //   ).retrieve().bodyToMono(Itinerary.class);
+  // }
 
   public Mono<Void> revokeItinerary(Itinerary it, SagaContext ctx) {
     return HttpCall.propagate(
@@ -400,47 +430,110 @@ Tips:
 - Inspect `ctx.getStatus(stepId)` to assert `DONE`, `FAILED`, or `COMPENSATED`.
 
 
-## 13) Programmatic (no-annotations) variant — optional
-You can build the same saga dynamically with the fluent builder and functional handlers. This is useful for module-scoped flows or heavy testing.
+## 13) Programmatic (no-annotations) variant — modern approach
+You can build the same saga dynamically with the fluent builder and functional handlers. This is useful for module-scoped flows or heavy testing. The modern API uses Duration-based configuration and typed StepInputs.
 
 ```java
 import com.catalis.transactionalengine.core.SagaContext;
 import com.catalis.transactionalengine.engine.SagaEngine;
 import com.catalis.transactionalengine.engine.StepHandler;
+import com.catalis.transactionalengine.engine.StepInputs;
 import com.catalis.transactionalengine.registry.SagaBuilder;
 import com.catalis.transactionalengine.registry.SagaDefinition;
 import reactor.core.publisher.Mono;
+import java.time.Duration;
 
+// Modern approach with Duration-based configuration
 SagaDefinition travel = SagaBuilder.saga("travel")
-  .step("initBooking").timeoutMs(2000)
+  .step("initBooking")
+    .timeout(Duration.ofSeconds(2))
     .handler((StepHandler<InitBookingCmd, String>) (in, ctx) -> Mono.just("B-123"))
     .add()
-  .step("reserveFlight").dependsOn("initBooking").retry(2).backoffMs(300).timeoutMs(5000)
+  .step("reserveFlight")
+    .dependsOn("initBooking")
+    .retry(2)
+    .backoff(Duration.ofMillis(300))
+    .timeout(Duration.ofSeconds(5))
     .handler((StepHandler<FlightReq, FlightRes>) (in, ctx) -> Mono.just(new FlightRes("F-1")))
     .add()
-  .step("reserveHotel").dependsOn("initBooking").retry(2).backoffMs(300).timeoutMs(5000)
+  .step("reserveHotel")
+    .dependsOn("initBooking")
+    .retry(2)
+    .backoff(Duration.ofMillis(300))
+    .timeout(Duration.ofSeconds(5))
     .handler((StepHandler<HotelReq, HotelRes>) (in, ctx) -> Mono.just(new HotelRes("H-1")))
     .add()
-  .step("reserveCar").dependsOn("initBooking").idempotencyKey("car:standard").timeoutMs(4000)
+  .step("reserveCar")
+    .dependsOn("initBooking")
+    .idempotencyKey("car:standard")
+    .timeout(Duration.ofSeconds(4))
     .handler((StepHandler<CarReq, CarRes>) (in, ctx) -> Mono.just(new CarRes("C-1")))
     .add()
-  .step("capturePayment").dependsOn("reserveFlight", "reserveHotel", "reserveCar").timeoutMs(6000)
+  .step("capturePayment")
+    .dependsOn("reserveFlight", "reserveHotel", "reserveCar")
+    .timeout(Duration.ofSeconds(6))
     .handler((StepHandler<PaymentReq, String>) (in, ctx) -> Mono.just("charge-OK"))
     .add()
-  .step("issueItinerary").dependsOn("capturePayment").timeoutMs(3000)
-    .handler((StepHandler<Object, Itinerary>) (in, ctx) -> Mono.just(new Itinerary("B-123", "http://docs/it.pdf")))
+  .step("issueItinerary")
+    .dependsOn("capturePayment")
+    .timeout(Duration.ofSeconds(3))
+    .handler((StepHandler<Void, Itinerary>) (in, ctx) -> {
+      // Access previous step results from context
+      String bookingId = (String) ctx.getResult("initBooking");
+      String chargeId = (String) ctx.getResult("capturePayment");
+      return Mono.just(new Itinerary(bookingId, "http://docs/itinerary.pdf"));
+    })
     .add()
   .build();
 
+// Execute with modern StepInputs DSL
 SagaContext ctx = new SagaContext();
-Map<String, Object> inputs = Map.of(
-  "initBooking", new InitBookingCmd("cust-100", "trip-42"),
-  "reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2),
-  "reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1),
-  "reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"),
-  "capturePayment", new PaymentReq("cust-100", 2_450_00, "USD")
-);
-Mono<com.catalis.transactionalengine.core.SagaResult> result = sagaEngine.execute(travel, inputs, ctx);
+ctx.putHeader("X-User-Id", "u-123");
+
+StepInputs inputs = StepInputs.builder()
+  .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
+  .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
+  .forStepId("reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1))
+  .forStepId("reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"))
+  .forStepId("capturePayment", new PaymentReq("cust-100", 2_450_00, "USD"))
+  .build();
+
+// Execute and get typed result
+Mono<SagaResult> result = sagaEngine.execute(travel, inputs, ctx);
+SagaResult sagaResult = result.block();
+
+if (sagaResult.isSuccess()) {
+  Itinerary itinerary = sagaResult.resultOf("issueItinerary", Itinerary.class).orElse(null);
+  // Process successful booking
+} else {
+  String failedStep = sagaResult.firstErrorStepId().orElse("unknown");
+  // Handle failure
+}
+```
+
+**🔄 Migration from deprecated API:**
+```java
+// Old approach (deprecated but still works)
+// Map<String, Object> inputs = Map.of(...);
+// Mono<Map<String, Object>> result = sagaEngine.run(travel, inputs, ctx);
+
+// New approach (recommended)
+// StepInputs inputs = StepInputs.builder()...build();
+// Mono<SagaResult> result = sagaEngine.execute(travel, inputs, ctx);
+```
+
+**Advanced: StepInputs with lazy resolvers in programmatic sagas:**
+```java
+StepInputs dynamicInputs = StepInputs.builder()
+  .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
+  .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
+  // Lazy resolver: issueItinerary input depends on previous results
+  .forStepId("issueItinerary", ctx -> {
+    String bookingId = (String) ctx.getResult("initBooking");
+    String userId = ctx.headers().get("X-User-Id");
+    return new IssueItineraryReq(bookingId, userId);
+  })
+  .build();
 ```
 
 
@@ -514,3 +607,21 @@ StepInputs inputs = StepInputs.builder()
 These values are cached once resolved so the same input is reused by compensation if needed.
 
 Happy trips and reliable compensations!
+
+
+## Cancellation
+
+Reactor-based execution implies cooperative cancellation. When a caller cancels the subscription returned by SagaEngine:
+
+- In-flight steps in the current layer continue to completion; running user code is not forcibly interrupted.
+- No further layers are started after cancellation is observed.
+- Cancellation alone does not trigger compensation. Compensation occurs only when a step fails and the engine transitions into the failure path.
+
+Recommended practices:
+- Implement steps using non-blocking, cancellable clients and avoid blocking calls.
+- Use doOnCancel in step Monos to propagate cancel signals to downstream clients where supported.
+- If you need compensations on user aborts, introduce a guard step that can fail fast on a cancellation/header flag, causing the engine to compensate prior steps.
+
+Notes:
+- SagaBuilder provides Duration-based configuration: backoff(Duration) and timeout(Duration). Millisecond variants are deprecated.
+- SagaEvents.onCompensated is emitted for both success and error cases; a null error indicates a successful compensation.

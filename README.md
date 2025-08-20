@@ -11,21 +11,26 @@ This library does not replace database transactions; it coordinates cross-servic
 - [The Saga pattern in 5 minutes](#the-saga-pattern-in-5-minutes)
 - [Key concepts](#key-concepts)
 - [Features](#features)
+- [Modern API features](#modern-api-features)
+  - [Typed StepInputs DSL](#typed-stepinputs-dsl)
+  - [SagaResult for comprehensive execution results](#sagaresult-for-comprehensive-execution-results)
+  - [Parameter injection](#parameter-injection-in-step-signatures)
+  - [Programmatic saga building](#programmatic-saga-building)
+  - [Duration-based configuration](#duration-based-configuration)
 - [Architecture at a glance](#architecture-at-a-glance)
 - [How it works](#how-it-works)
+- [Installation](#installation)
 - [Quick start](#quick-start)
 - [Complete step-by-step tutorial](#complete-step-by-step-tutorial)
-- [Installation](#installation)
+- [Migration guide](#migration-guide)
 - [Annotations reference](#annotations-reference)
-- [Step inputs + SagaResult](#step-inputs-typed-dsl-and-typed-results-sagaresult)
-- [Parameter injection](#parameter-injection-in-step-signatures-multi-parameter)
-- [Programmatic saga execution](#programmatic-saga-execution-fluent-flexible)
 - [Observability](#observability)
 - [HTTP integration](#http-integration)
 - [Limitations & non-goals](#limitations--non-goals)
 - [Compatibility](#compatibility)
 - [Common pitfalls (FAQ)](#common-pitfalls-faq)
 - [Tests](#tests)
+- [Cancellation](#cancellation)
 - [License](#license)
 
 ## What is this?
@@ -71,26 +76,161 @@ flowchart LR
 - Observability: lifecycle callbacks via SagaEvents and optional aspect logs.
 
 ## Features
-- Annotations + AOP
+- **Modern API (preferred)**
+  - Type-safe `StepInputs` DSL with lazy resolvers
+  - Typed `SagaResult` API with result and metadata access
+  - Multi-parameter injection with `@FromStep`, `@Header`, `@Headers`, `@Input` annotations
+  - Programmatic saga building with `SagaBuilder` for dynamic workflows
+  - Duration-based configuration for readability (`timeout(Duration)`, `backoff(Duration)`)
+
+- **Annotations & AOP**
   - `@EnableTransactionalEngine` — bootstraps engine, registry, and aspects
   - `@Saga(name)` — marks a class as an orchestrator
-  - `@SagaStep(id, compensate, dependsOn?, retry?, backoffMs?, timeoutMs?, idempotencyKey?)`
-- Execution model
+  - `@SagaStep(id, compensate, dependsOn?, retry?, timeoutMs?, idempotencyKey?)`
+
+- **Execution model**
   - Builds a DAG from `dependsOn`; executes steps layer-by-layer
   - Steps in the same layer run concurrently
   - On failure, compensates completed steps in reverse completion order
-- Per-step controls
-  - Retry with fixed backoff and per-attempt timeout
-  - Per-run idempotency using `idempotencyKey` (skips the step within the same saga run if the key has already been used)
-- Context and results
+
+- **Per-step controls**
+  - Retry with fixed/jittered backoff and per-attempt timeout
+  - Per-run idempotency using `idempotencyKey` (skips the step within the same saga run)
+
+- **Context and results**
   - `SagaContext` stores correlation id, outbound headers, per-step status/attempts/latency, and step results
-- Observability
+  - `SagaResult` provides a typed snapshot of execution results and metadata
+
+- **Observability**
   - Emits lifecycle events via `SagaEvents` (default `SagaLoggerEvents` logs JSON-friendly key=value entries)
   - Minimal `StepLoggingAspect` for raw method invocation latency
-- HTTP integration (WebClient)
+
+- **HTTP integration (WebClient)**
   - `HttpCall` helper to propagate `X-Transactional-Id` and custom headers from `SagaContext`
-- In-memory only
+
+- **In-memory only**
   - No persistence of saga state. Simple and fast within a single JVM process
+
+## Modern API features
+
+### Typed StepInputs DSL
+A type-safe way to provide inputs to saga steps, replacing the older Map-based approach:
+
+```java
+// Building concrete inputs
+StepInputs inputs = StepInputs.builder()
+    .forStepId("reserveFunds", new ReserveCmd("customer-123", 500_00))
+    .forStepId("createOrder", new CreateOrderCmd("customer-123", 500_00))
+    .build();
+
+// Dynamic inputs with lazy resolvers
+StepInputs dynamicInputs = StepInputs.builder()
+    .forStepId("issueTicket", ctx -> new IssueTicketReq(
+        (FlightRes) ctx.getResult("reserveFlight"),
+        (PaymentReceipt) ctx.getResult("capturePayment"),
+        ctx.headers().get("X-User-Id")
+    ))
+    .build();
+
+// Executing with typed inputs
+SagaResult result = engine.execute("PaymentSaga", inputs, ctx).block();
+```
+
+Resolvers are evaluated right before step execution and cached for compensation if needed.
+
+### SagaResult for comprehensive execution results
+The new `execute()` API returns a `SagaResult` that provides typed access to step results and execution metadata:
+
+```java
+SagaResult result = engine.execute("TravelSaga", inputs, ctx).block();
+
+// Typed access to step results
+if (result.isSuccess()) {
+    String bookingId = result.resultOf("initBooking", String.class).orElse(null);
+    FlightRes flight = result.resultOf("reserveFlight", FlightRes.class).orElse(null);
+    
+    // Per-step metadata
+    int attempts = result.steps().get("reserveFlight").attempts();
+    long latencyMs = result.steps().get("reserveFlight").latencyMs();
+}
+
+// Error details for failed executions
+if (!result.isSuccess()) {
+    String failedStepId = result.firstErrorStepId().orElse(null);
+    Throwable error = result.error().orElse(null);
+    Set<String> compensatedSteps = result.compensatedSteps();
+}
+
+// Context information
+String correlationId = result.correlationId();
+Map<String, String> headers = result.headers();
+Duration executionTime = result.duration();
+```
+
+### Parameter injection in step signatures
+Annotate step method parameters to have values injected automatically:
+
+```java
+@SagaStep(id = "issueTicket", compensate = "cancelTicket", 
+          dependsOn = {"reserveFlight", "capturePayment"})
+public Mono<Ticket> issueTicket(
+    @FromStep("reserveFlight") FlightReservation flight,
+    @FromStep("capturePayment") PaymentReceipt payment,
+    @Header("X-User-Id") String userId,
+    SagaContext ctx
+) {
+    // Use injected values directly
+    return ticketService.issue(flight.id(), payment.id(), userId);
+}
+```
+
+Supported annotations:
+- `@FromStep(stepId)`: injects the result of another step
+- `@Header(name)`: injects a specific header
+- `@Headers`: injects all headers as Map<String, String>
+- `@Input` or `@Input("key")`: injects the step input (or a value from a Map input)
+
+### Programmatic saga building
+Define sagas dynamically without annotations using a fluent builder:
+
+```java
+SagaDefinition transferSaga = SagaBuilder.saga("transfer")
+    .step("debit")
+        .timeout(Duration.ofSeconds(2))
+        .retry(2)
+        .backoff(Duration.ofMillis(100))
+        .handler((StepHandler<DebitRequest, Receipt>) (in, ctx) ->
+            paymentService.debit(in) // Mono<Receipt>
+        )
+        .add()
+    .step("credit")
+        .dependsOn("debit")
+        .handler((StepHandler<CreditRequest, Receipt>) (in, ctx) ->
+            paymentService.credit(in)
+        )
+        .add()
+    .build();
+
+// Execute with the same API
+SagaResult result = sagaEngine.execute(transferSaga, inputs, ctx).block();
+```
+
+### Duration-based configuration
+More readable way to specify timeouts and backoffs using `java.time.Duration`:
+
+```java
+// In annotations (still uses milliseconds for backward compatibility)
+@SagaStep(id = "reserveFlight", compensate = "cancelFlight", 
+          retry = 2, backoffMs = 300, timeoutMs = 5000)
+
+// In programmatic builder (preferred)
+.step("reserveFlight")
+    .retry(2)
+    .backoff(Duration.ofMillis(300))
+    .timeout(Duration.ofSeconds(5))
+    .handler(...)
+    .add()
+```
 
 ## Architecture at a glance
 This section is a quick, visual guide to how everything fits together. It is designed to be read in under 3 minutes. If you want the in‑depth mechanics, see "How it works" just below.
@@ -134,6 +274,8 @@ flowchart LR
   subgraph Runtime
     CTX[SagaContext]
     IO[HttpCall]
+    INP[StepInputs]
+    RES[SagaResult]
   end
   subgraph YourCode
     ORC[Saga class]
@@ -148,6 +290,8 @@ flowchart LR
   ENG --> OBS
   ENG --> ORC
   ENG --> IO
+  ENG --- INP
+  ENG --- RES
 ```
 
 Glossary (short and practical)
@@ -155,6 +299,7 @@ Glossary (short and practical)
 - SagaEngine: runs the DAG in layers; applies retry, backoff, timeout, idempotency; compensates on failure; emits events.
 - SagaContext: per-run state (correlation id, headers, per-step status/attempts/latency/results, idempotency keys).
 - StepInputs: your typed inputs per step; supports lazy resolvers that evaluate against SagaContext right before execution.
+- SagaResult: immutable snapshot of execution results with typed access to step outputs and metadata.
 - SagaEvents: callbacks to integrate with logs/metrics/traces (default is SagaLoggerEvents).
 - StepLoggingAspect: optional AOP that logs raw step invocation latency.
 - HttpCall: tiny helper to propagate correlation/custom headers to WebClient.
@@ -326,6 +471,74 @@ dependencies {
 }
 ```
 
+## Migration guide
+
+### Migrating from Map-based run() to typed execute()
+
+Old approach:
+```java
+Map<String, Object> inputs = Map.of(
+    "reserveFunds", new ReserveCmd("customer-123", 500_00),
+    "createOrder", new CreateOrderCmd("customer-123", 500_00)
+);
+Map<String, Object> results = engine.run("PaymentSaga", inputs, ctx).block();
+Long orderId = (Long) results.get("createOrder");
+```
+
+New approach:
+```java
+StepInputs inputs = StepInputs.builder()
+    .forStepId("reserveFunds", new ReserveCmd("customer-123", 500_00))
+    .forStepId("createOrder", new CreateOrderCmd("customer-123", 500_00))
+    .build();
+SagaResult result = engine.execute("PaymentSaga", inputs, ctx).block();
+Long orderId = result.resultOf("createOrder", Long.class).orElse(null);
+```
+
+### Using parameter injection instead of manual resolution
+
+Old approach:
+```java
+@SagaStep(id = "issueTicket", compensate = "cancelTicket")
+public Mono<Ticket> issueTicket(SagaContext ctx) {
+    FlightRes flight = (FlightRes) ctx.getResult("reserveFlight");
+    PaymentReceipt payment = (PaymentReceipt) ctx.getResult("capturePayment");
+    String userId = ctx.headers().get("X-User-Id");
+    return ticketService.issue(flight.id(), payment.id(), userId);
+}
+```
+
+New approach:
+```java
+@SagaStep(id = "issueTicket", compensate = "cancelTicket")
+public Mono<Ticket> issueTicket(
+    @FromStep("reserveFlight") FlightRes flight,
+    @FromStep("capturePayment") PaymentReceipt payment,
+    @Header("X-User-Id") String userId,
+    SagaContext ctx // still available if needed
+) {
+    return ticketService.issue(flight.id(), payment.id(), userId);
+}
+```
+
+### Replacing millisecond values with Duration in programmatic building
+
+Old approach (still works but deprecated):
+```java
+.step("reserveFlight")
+    .retry(2)
+    .backoffMs(300)
+    .timeoutMs(5000)
+```
+
+New approach:
+```java
+.step("reserveFlight")
+    .retry(2)
+    .backoff(Duration.ofMillis(300))
+    .timeout(Duration.ofSeconds(5))
+```
+
 ## Annotations reference
 | Annotation | Purpose | Key attributes | Notes |
 | --- | --- | --- | --- |
@@ -338,6 +551,13 @@ Supported step method signatures
 - (InputType input)
 - (SagaContext ctx)
 - ()
+- With parameter annotations: (@FromStep("stepId") ResultType result, @Header("name") String header, ...)
+
+Parameter injection annotations
+- `@FromStep("stepId")`: injects the result of another step
+- `@Header("name")`: injects a specific header
+- `@Headers`: injects all headers as Map<String, String>
+- `@Input` or `@Input("key")`: injects the step input (or a value from a Map input)
 
 Return types
 - Reactor Mono<T> preferred. Plain T is supported and will be wrapped using `Mono.justOrEmpty`.
@@ -526,7 +746,7 @@ What is emitted and when
 - onStart(sagaName, sagaId): fired once at the beginning of a run.
 - onStepSuccess(sagaName, sagaId, stepId, attempts, latencyMs): after a step completes successfully.
 - onStepFailed(sagaName, sagaId, stepId, error, attempts, latencyMs): after the final failed attempt of a step.
-- onCompensated(sagaName, sagaId, stepId, error): called when a compensation method errors (successful compensations are not emitted in this MVP).
+- onCompensated(sagaName, sagaId, stepId, error): emitted for both successful and failed compensations; error is null on success.
 - onCompleted(sagaName, sagaId, success): fired once when the saga finishes (success=false if any step failed).
 
 Default implementation
@@ -700,3 +920,22 @@ Notes
 
 ## License
 Apache-2.0
+
+
+
+## Cancellation
+
+This library runs steps using Reactor (Mono/Flux). Caller cancellation (disposing the subscription to SagaEngine.run/execute) behaves as follows:
+
+- In-flight steps in the current layer keep running to completion; Reactor does not forcibly interrupt running user code or blocking calls.
+- After cancellation, no new steps/layers are started.
+- Cancellation alone does not trigger compensation. Compensation is executed only when a step fails and the engine enters the failure path.
+
+Recommendations for cooperative cancellation:
+- Ensure your step implementations call cancellable/reactive clients and avoid blocking where possible.
+- If you need best-effort abort, use doOnCancel in your Monos to propagate cancellation to downstream clients.
+- If business requirements demand compensations on user-initiated abort, design a guard step that can fail fast on a cancellation signal (e.g., via a header) so the engine will enter the compensation path.
+
+API notes:
+- SagaBuilder now supports Duration-based configuration methods: backoff(Duration) and timeout(Duration). Millisecond methods (backoffMs/timeoutMs) remain for backward compatibility but are deprecated.
+- SagaEvents.onCompensated is emitted for both success and error cases; a null error parameter indicates a successful compensation.
