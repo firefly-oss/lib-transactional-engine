@@ -18,11 +18,17 @@ import org.slf4j.LoggerFactory;
 public class StepLoggingAspect {
     private static final Logger log = LoggerFactory.getLogger(StepLoggingAspect.class);
 
-    @Around("@annotation(com.catalis.transactionalengine.annotations.SagaStep)")
+    @Around("@annotation(com.catalis.transactionalengine.annotations.SagaStep) || @annotation(com.catalis.transactionalengine.annotations.ExternalSagaStep)")
     public Object aroundSagaStep(ProceedingJoinPoint pjp) throws Throwable {
         MethodSignature ms = (MethodSignature) pjp.getSignature();
         SagaStep ann = ms.getMethod().getAnnotation(SagaStep.class);
-        String stepId = ann != null ? ann.id() : ms.getMethod().getName();
+        String stepId;
+        if (ann != null) {
+            stepId = ann.id();
+        } else {
+            var ext = ms.getMethod().getAnnotation(com.catalis.transactionalengine.annotations.ExternalSagaStep.class);
+            stepId = ext != null ? ext.id() : ms.getMethod().getName();
+        }
         SagaContext ctx = null;
         for (Object arg : pjp.getArgs()) {
             if (arg instanceof SagaContext sc) { ctx = sc; break; }

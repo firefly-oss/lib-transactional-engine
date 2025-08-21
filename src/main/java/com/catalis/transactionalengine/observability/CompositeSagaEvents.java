@@ -55,6 +55,31 @@ public class CompositeSagaEvents implements SagaEvents {
     }
 
     @Override
+    public void onCompensationStarted(String sagaName, String sagaId, String stepId) {
+        for (SagaEvents d : delegates) d.onCompensationStarted(sagaName, sagaId, stepId);
+    }
+
+    @Override
+    public void onCompensationRetry(String sagaName, String sagaId, String stepId, int attempt) {
+        for (SagaEvents d : delegates) d.onCompensationRetry(sagaName, sagaId, stepId, attempt);
+    }
+
+    @Override
+    public void onCompensationSkipped(String sagaName, String sagaId, String stepId, String reason) {
+        for (SagaEvents d : delegates) d.onCompensationSkipped(sagaName, sagaId, stepId, reason);
+    }
+
+    @Override
+    public void onCompensationCircuitOpen(String sagaName, String sagaId, String stepId) {
+        for (SagaEvents d : delegates) d.onCompensationCircuitOpen(sagaName, sagaId, stepId);
+    }
+
+    @Override
+    public void onCompensationBatchCompleted(String sagaName, String sagaId, List<String> stepIds, boolean allSuccessful) {
+        for (SagaEvents d : delegates) d.onCompensationBatchCompleted(sagaName, sagaId, stepIds, allSuccessful);
+    }
+
+    @Override
     public void onCompleted(String sagaName, String sagaId, boolean success) {
         for (SagaEvents d : delegates) d.onCompleted(sagaName, sagaId, success);
     }

@@ -29,10 +29,20 @@ public class StepDefinition {
     public final boolean cpuBound;
     public final Method stepMethod; // method discovered on target class (for metadata)
     public Method stepInvocationMethod; // method to invoke on the bean (proxy-safe)
+    /** Optional: when step is declared externally, this holds the target bean to invoke on. */
+    public Object stepBean;
     public Method compensateMethod; // discovered on target class (for metadata)
     public Method compensateInvocationMethod; // method to invoke on the bean (proxy-safe)
+    /** Optional: when compensation is declared externally, this holds the target bean to invoke on. */
+    public Object compensateBean;
     // Functional execution alternative
     public StepHandler<?,?> handler;
+
+    // Compensation-specific optional configuration (null means inherit from step config)
+    public Integer compensationRetry; // -1 or null means inherit
+    public Duration compensationBackoff; // null means inherit
+    public Duration compensationTimeout; // null means inherit
+    public boolean compensationCritical; // default false
 
     public StepDefinition(String id,
                           String compensateName,

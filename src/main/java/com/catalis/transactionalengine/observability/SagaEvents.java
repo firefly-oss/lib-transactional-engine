@@ -2,6 +2,8 @@ package com.catalis.transactionalengine.observability;
 
 import com.catalis.transactionalengine.core.SagaContext;
 
+import java.util.List;
+
 /**
  * Observability hook for Saga lifecycle events.
  * Provide your own Spring bean of this type to export metrics/traces/logs.
@@ -20,5 +22,13 @@ public interface SagaEvents {
     default void onStepFailed(String sagaName, String sagaId, String stepId, Throwable error, int attempts, long latencyMs) {}
     default void onCompensated(String sagaName, String sagaId, String stepId, Throwable error) {}
     default void onStepSkippedIdempotent(String sagaName, String sagaId, String stepId) {}
+
+    // New compensation-specific events
+    default void onCompensationStarted(String sagaName, String sagaId, String stepId) {}
+    default void onCompensationRetry(String sagaName, String sagaId, String stepId, int attempt) {}
+    default void onCompensationSkipped(String sagaName, String sagaId, String stepId, String reason) {}
+    default void onCompensationCircuitOpen(String sagaName, String sagaId, String stepId) {}
+    default void onCompensationBatchCompleted(String sagaName, String sagaId, List<String> stepIds, boolean allSuccessful) {}
+
     default void onCompleted(String sagaName, String sagaId, boolean success) {}
 }

@@ -42,7 +42,10 @@ public class SagaEngine {
 
     public enum CompensationPolicy {
         STRICT_SEQUENTIAL,
-        GROUPED_PARALLEL
+        GROUPED_PARALLEL,
+        RETRY_WITH_BACKOFF,
+        CIRCUIT_BREAKER,
+        BEST_EFFORT_PARALLEL
     }
     private static final Logger log = LoggerFactory.getLogger(SagaEngine.class);
 
@@ -370,7 +373,8 @@ public class SagaEngine {
             execution = attemptCallHandler(sd, input, ctx, timeoutMs, sd.retry, backoffMs, sd.jitter, sd.jitterFactor, stepId);
         } else {
             Method invokeMethod = sd.stepInvocationMethod != null ? sd.stepInvocationMethod : sd.stepMethod;
-            execution = attemptCall(saga.bean, invokeMethod, sd.stepMethod, input, ctx, timeoutMs, sd.retry, backoffMs, sd.jitter, sd.jitterFactor, stepId);
+            Object targetBean = sd.stepBean != null ? sd.stepBean : saga.bean;
+            execution = attemptCall(targetBean, invokeMethod, sd.stepMethod, input, ctx, timeoutMs, sd.retry, backoffMs, sd.jitter, sd.jitterFactor, stepId);
         }
         if (sd.cpuBound) {
             execution = execution.subscribeOn(Schedulers.parallel());
@@ -608,10 +612,13 @@ public class SagaEngine {
                                   List<String> completionOrder,
                                   Map<String, Object> stepInputs,
                                   SagaContext ctx) {
-        if (policy == CompensationPolicy.GROUPED_PARALLEL) {
-            return compensateGroupedByLayer(sagaName, saga, completionOrder, stepInputs, ctx);
-        }
-        return compensateSequential(sagaName, saga, completionOrder, stepInputs, ctx);
+        return switch (policy) {
+            case GROUPED_PARALLEL -> compensateGroupedByLayer(sagaName, saga, completionOrder, stepInputs, ctx);
+            case RETRY_WITH_BACKOFF -> compensateSequentialWithRetries(sagaName, saga, completionOrder, stepInputs, ctx);
+            case CIRCUIT_BREAKER -> compensateSequentialWithCircuitBreaker(sagaName, saga, completionOrder, stepInputs, ctx);
+            case BEST_EFFORT_PARALLEL -> compensateBestEffortParallel(sagaName, saga, completionOrder, stepInputs, ctx);
+            case STRICT_SEQUENTIAL -> compensateSequential(sagaName, saga, completionOrder, stepInputs, ctx);
+        };
     }
 
     private Mono<Void> compensateSequential(String sagaName,
@@ -642,9 +649,13 @@ public class SagaEngine {
         Collections.reverse(filtered);
         return Flux.fromIterable(filtered)
                 .concatMap(layer -> Mono.when(layer.stream()
-                        .map(stepId -> compensateOne(sagaName, saga, stepId, stepInputs, ctx))
-                        .toList()
-                ))
+                                .map(stepId -> compensateOne(sagaName, saga, stepId, stepInputs, ctx))
+                                .toList()
+                        )
+                        .doFinally(s -> {
+                            try { events.onCompensationBatchCompleted(sagaName, ctx.correlationId(), layer, true); } catch (Throwable ignored) {}
+                        })
+                )
                 .then();
     }
 
@@ -655,6 +666,7 @@ public class SagaEngine {
                                      SagaContext ctx) {
         StepDefinition sd = saga.steps.get(stepId);
         if (sd == null) return Mono.empty();
+        events.onCompensationStarted(sagaName, ctx.correlationId(), stepId);
         if (sd.handler != null) {
             Object input = stepInputs.get(stepId);
             Object result = ctx.getResult(stepId);
@@ -670,13 +682,154 @@ public class SagaEngine {
         Method comp = sd.compensateInvocationMethod != null ? sd.compensateInvocationMethod : sd.compensateMethod;
         if (comp == null) return Mono.empty();
         Object arg = resolveCompensationArg(comp, stepInputs.get(stepId), ctx.getResult(stepId));
-        return invokeMono(saga.bean, comp, arg, ctx)
+        Object targetBean = sd.compensateBean != null ? sd.compensateBean : saga.bean;
+        return invokeMono(targetBean, comp, arg, ctx)
                 .doOnSuccess(v -> {
                     ctx.setStatus(stepId, StepStatus.COMPENSATED);
                     events.onCompensated(sagaName, ctx.correlationId(), stepId, null);
                 })
                 .doOnError(err -> events.onCompensated(sagaName, ctx.correlationId(), stepId, err))
                 .onErrorResume(err -> Mono.empty())
+                .then();
+    }
+
+    // --- New compensation policies and helpers ---
+    private static class CompParams {
+        final int retry; final long timeoutMs; final long backoffMs; final boolean jitter; final double jitterFactor;
+        CompParams(int retry, long timeoutMs, long backoffMs, boolean jitter, double jitterFactor) {
+            this.retry = retry; this.timeoutMs = timeoutMs; this.backoffMs = backoffMs; this.jitter = jitter; this.jitterFactor = jitterFactor;
+        }
+    }
+
+    private CompParams computeCompParams(StepDefinition sd) {
+        int retry = sd.compensationRetry != null ? sd.compensationRetry : sd.retry;
+        long timeoutMs = (sd.compensationTimeout != null ? sd.compensationTimeout : sd.timeout).toMillis();
+        long backoffMs = (sd.compensationBackoff != null ? sd.compensationBackoff : sd.backoff).toMillis();
+        return new CompParams(Math.max(0, retry), Math.max(0L, timeoutMs), Math.max(0L, backoffMs), sd.jitter, sd.jitterFactor);
+    }
+
+    private Mono<Boolean> compensateOneWithResult(String sagaName,
+                                                  SagaDefinition saga,
+                                                  String stepId,
+                                                  Map<String, Object> stepInputs,
+                                                  SagaContext ctx) {
+        StepDefinition sd = saga.steps.get(stepId);
+        if (sd == null) return Mono.just(true);
+        events.onCompensationStarted(sagaName, ctx.correlationId(), stepId);
+        CompParams p = computeCompParams(sd);
+        if (sd.handler != null) {
+            Object input = stepInputs.get(stepId);
+            Object result = ctx.getResult(stepId);
+            Object arg = input != null ? input : result;
+            return attemptCompensateHandler(sd, arg, ctx, p.timeoutMs, p.retry, p.backoffMs, p.jitter, p.jitterFactor, sagaName, stepId)
+                    .thenReturn(true)
+                    .doOnSuccess(v -> { ctx.setStatus(stepId, StepStatus.COMPENSATED); events.onCompensated(sagaName, ctx.correlationId(), stepId, null); })
+                    .onErrorResume(err -> {
+                        events.onCompensated(sagaName, ctx.correlationId(), stepId, err);
+                        return Mono.just(false);
+                    });
+        }
+        Method comp = sd.compensateInvocationMethod != null ? sd.compensateInvocationMethod : sd.compensateMethod;
+        if (comp == null) return Mono.just(true);
+        Object arg = resolveCompensationArg(comp, stepInputs.get(stepId), ctx.getResult(stepId));
+        Object targetBean = sd.compensateBean != null ? sd.compensateBean : saga.bean;
+        return attemptCompensateMethod(targetBean, comp, sd.compensateMethod, arg, ctx, p.timeoutMs, p.retry, p.backoffMs, p.jitter, p.jitterFactor, sagaName, stepId)
+                .thenReturn(true)
+                .doOnSuccess(v -> { ctx.setStatus(stepId, StepStatus.COMPENSATED); events.onCompensated(sagaName, ctx.correlationId(), stepId, null); })
+                .onErrorResume(err -> { events.onCompensated(sagaName, ctx.correlationId(), stepId, err); return Mono.just(false); });
+    }
+
+    private Mono<Object> attemptCompensateHandler(StepDefinition sd, Object input, SagaContext ctx,
+                                                  long timeoutMs, int retry, long backoffMs, boolean jitter, double jitterFactor,
+                                                  String sagaName, String stepId) {
+        Mono<Object> base = Mono.defer(() -> {
+            if (sd.handler == null) return Mono.error(new IllegalStateException("No handler for step " + sd.id));
+            StepHandler h = sd.handler;
+            // Complete successfully without emitting a value; upstream will map completion to a success signal.
+            return h.compensate(input, ctx).then(Mono.empty());
+        });
+        if (timeoutMs > 0) base = base.timeout(Duration.ofMillis(timeoutMs));
+        return base.onErrorResume(err -> {
+                    if (retry > 0) {
+                        events.onCompensationRetry(sagaName, ctx.correlationId(), stepId, (sd.compensationRetry != null ? sd.compensationRetry - retry + 1 : (sd.retry - retry + 1)));
+                        long delay = computeDelay(backoffMs, jitter, jitterFactor);
+                        return Mono.delay(Duration.ofMillis(Math.max(0, delay)))
+                                .then(attemptCompensateHandler(sd, input, ctx, timeoutMs, retry - 1, backoffMs, jitter, jitterFactor, sagaName, stepId));
+                    }
+                    return Mono.error(err);
+                });
+    }
+
+    private Mono<Object> attemptCompensateMethod(Object bean, Method invocationMethod, Method annotationSource, Object input, SagaContext ctx,
+                                                 long timeoutMs, int retry, long backoffMs, boolean jitter, double jitterFactor,
+                                                 String sagaName, String stepId) {
+        Mono<Object> base = Mono.defer(() -> invokeMono(bean, invocationMethod, annotationSource, input, ctx));
+        if (timeoutMs > 0) base = base.timeout(Duration.ofMillis(timeoutMs));
+        return base.onErrorResume(err -> {
+            if (retry > 0) {
+                events.onCompensationRetry(sagaName, ctx.correlationId(), stepId, (retry));
+                long delay = computeDelay(backoffMs, jitter, jitterFactor);
+                return Mono.delay(Duration.ofMillis(Math.max(0, delay)))
+                        .then(attemptCompensateMethod(bean, invocationMethod, annotationSource, input, ctx, timeoutMs, retry - 1, backoffMs, jitter, jitterFactor, sagaName, stepId));
+            }
+            return Mono.error(err);
+        });
+    }
+
+    private Mono<Void> compensateSequentialWithRetries(String sagaName,
+                                                       SagaDefinition saga,
+                                                       List<String> completionOrder,
+                                                       Map<String, Object> stepInputs,
+                                                       SagaContext ctx) {
+        List<String> reversed = new ArrayList<>(completionOrder);
+        Collections.reverse(reversed);
+        return Flux.fromIterable(reversed)
+                .concatMap(stepId -> compensateOneWithResult(sagaName, saga, stepId, stepInputs, ctx).then())
+                .then();
+    }
+
+    private Mono<Void> compensateSequentialWithCircuitBreaker(String sagaName,
+                                                              SagaDefinition saga,
+                                                              List<String> completionOrder,
+                                                              Map<String, Object> stepInputs,
+                                                              SagaContext ctx) {
+        List<String> reversed = new ArrayList<>(completionOrder);
+        Collections.reverse(reversed);
+        AtomicBoolean circuitOpen = new AtomicBoolean(false);
+        return Flux.fromIterable(reversed)
+                .concatMap(stepId -> {
+                    if (circuitOpen.get()) {
+                        events.onCompensationSkipped(sagaName, ctx.correlationId(), stepId, "circuit open");
+                        return Mono.empty();
+                    }
+                    StepDefinition sd = saga.steps.get(stepId);
+                    return compensateOneWithResult(sagaName, saga, stepId, stepInputs, ctx)
+                            .flatMap(success -> {
+                                if (!success && sd != null && sd.compensationCritical) {
+                                    circuitOpen.set(true);
+                                    events.onCompensationCircuitOpen(sagaName, ctx.correlationId(), stepId);
+                                }
+                                return Mono.empty();
+                            });
+                })
+                .then();
+    }
+
+    private Mono<Void> compensateBestEffortParallel(String sagaName,
+                                                    SagaDefinition saga,
+                                                    List<String> completionOrder,
+                                                    Map<String, Object> stepInputs,
+                                                    SagaContext ctx) {
+        List<String> reversed = new ArrayList<>(completionOrder);
+        Collections.reverse(reversed);
+        return Flux.fromIterable(reversed)
+                .flatMap(stepId -> compensateOneWithResult(sagaName, saga, stepId, stepInputs, ctx)
+                        .onErrorReturn(false))
+                .collectList()
+                .doOnNext(results -> {
+                    boolean allOk = results.stream().allMatch(Boolean::booleanValue);
+                    events.onCompensationBatchCompleted(sagaName, ctx.correlationId(), reversed, allOk);
+                })
                 .then();
     }
 

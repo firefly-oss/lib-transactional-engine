@@ -2,6 +2,7 @@ package com.catalis.transactionalengine.registry;
 
 import com.catalis.transactionalengine.annotations.Saga;
 import com.catalis.transactionalengine.annotations.SagaStep;
+import com.catalis.transactionalengine.annotations.CompensationSagaStep;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.context.ApplicationContext;
 import org.springframework.util.StringUtils;
@@ -50,6 +51,8 @@ public class SagaRegistry {
     private synchronized void ensureScanned() {
         if (scanned) return;
         Map<String, Object> beans = applicationContext.getBeansWithAnnotation(Saga.class);
+        // Track compensations that were declared by name but not found in-class; validate after external scan
+        Set<String> missingInClassCompensations = new HashSet<>();
         for (Object bean : beans.values()) {
             Class<?> targetClass = AopUtils.getTargetClass(bean);
             Saga sagaAnn = targetClass.getAnnotation(Saga.class);
@@ -86,6 +89,11 @@ public class SagaRegistry {
                         stepAnn.cpuBound(),
                         m
                 );
+                // Compensation-specific overrides
+                if (stepAnn.compensationRetry() >= 0) stepDef.compensationRetry = stepAnn.compensationRetry();
+                if (stepAnn.compensationBackoffMs() >= 0) stepDef.compensationBackoff = Duration.ofMillis(stepAnn.compensationBackoffMs());
+                if (stepAnn.compensationTimeoutMs() >= 0) stepDef.compensationTimeout = Duration.ofMillis(stepAnn.compensationTimeoutMs());
+                stepDef.compensationCritical = stepAnn.compensationCritical();
                 // Resolve invocation method on the actual bean class (proxy-safe)
                 stepDef.stepInvocationMethod = resolveInvocationMethod(bean.getClass(), m);
                 if (sagaDef.steps.putIfAbsent(stepDef.id, stepDef) != null) {
@@ -93,7 +101,7 @@ public class SagaRegistry {
                 }
             }
 
-            // Resolve compensations
+            // Resolve compensations (in-class first)
             for (StepDefinition sd : sagaDef.steps.values()) {
                 if (!StringUtils.hasText(sd.compensateName)) continue;
                 try {
@@ -109,6 +117,107 @@ public class SagaRegistry {
             validateParameters(sagaDef);
             sagas.put(sagaName, sagaDef);
         }
+
+        // Second pass: discover external steps and compensations
+        Map<String, Object> allBeans = applicationContext.getBeansOfType(Object.class);
+
+        // 2.a External steps
+        for (Object bean : allBeans.values()) {
+            Class<?> targetClass = AopUtils.getTargetClass(bean);
+            for (Method m : targetClass.getMethods()) {
+                com.catalis.transactionalengine.annotations.ExternalSagaStep es = m.getAnnotation(com.catalis.transactionalengine.annotations.ExternalSagaStep.class);
+                if (es == null) continue;
+                String sagaName = es.saga();
+                if (!sagas.containsKey(sagaName)) {
+                    throw new IllegalStateException("@ExternalSagaStep references unknown saga '" + sagaName + "'");
+                }
+                SagaDefinition def = sagas.get(sagaName);
+                if (def.steps.containsKey(es.id())) {
+                    throw new IllegalStateException("Duplicate step id '" + es.id() + "' in saga '" + sagaName + "' (external declaration)");
+                }
+                Duration backoff = null;
+                Duration timeout = null;
+                if (es.backoffMs() > 0) {
+                    backoff = Duration.ofMillis(es.backoffMs());
+                } else if (org.springframework.util.StringUtils.hasText(es.backoff())) {
+                    try { backoff = Duration.parse(es.backoff()); } catch (Exception ignored) {}
+                }
+                if (es.timeoutMs() > 0) {
+                    timeout = Duration.ofMillis(es.timeoutMs());
+                } else if (org.springframework.util.StringUtils.hasText(es.timeout())) {
+                    try { timeout = Duration.parse(es.timeout()); } catch (Exception ignored) {}
+                }
+                StepDefinition stepDef = new StepDefinition(
+                        es.id(),
+                        es.compensate(),
+                        java.util.List.of(es.dependsOn()),
+                        es.retry(),
+                        backoff,
+                        timeout,
+                        es.idempotencyKey(),
+                        es.jitter(),
+                        es.jitterFactor(),
+                        es.cpuBound(),
+                        m
+                );
+                // Compensation-specific overrides
+                if (es.compensationRetry() >= 0) stepDef.compensationRetry = es.compensationRetry();
+                if (es.compensationBackoffMs() >= 0) stepDef.compensationBackoff = Duration.ofMillis(es.compensationBackoffMs());
+                if (es.compensationTimeoutMs() >= 0) stepDef.compensationTimeout = Duration.ofMillis(es.compensationTimeoutMs());
+                stepDef.compensationCritical = es.compensationCritical();
+
+                stepDef.stepInvocationMethod = resolveInvocationMethod(bean.getClass(), m);
+                stepDef.stepBean = bean;
+                // If compensate() provided on same bean, attempt to resolve now; external @CompensationSagaStep can still override
+                if (org.springframework.util.StringUtils.hasText(stepDef.compensateName)) {
+                    try {
+                        Method comp = findCompensateMethod(targetClass, stepDef.compensateName);
+                        stepDef.compensateMethod = comp;
+                        stepDef.compensateInvocationMethod = resolveInvocationMethod(bean.getClass(), comp);
+                        stepDef.compensateBean = bean;
+                    } catch (NoSuchMethodException e) {
+                        throw new IllegalStateException("Compensation method '" + stepDef.compensateName + "' not found on external step bean for saga '" + sagaName + "'");
+                    }
+                }
+                def.steps.put(stepDef.id, stepDef);
+            }
+        }
+
+        // 2.b External compensations and wire them with precedence
+        // track duplicates
+        Set<String> seenKeys = new HashSet<>();
+        for (Object bean : allBeans.values()) {
+            Class<?> targetClass = AopUtils.getTargetClass(bean);
+            for (Method m : targetClass.getMethods()) {
+                CompensationSagaStep cs = m.getAnnotation(CompensationSagaStep.class);
+                if (cs == null) continue;
+                String sagaName = cs.saga();
+                String stepId = cs.forStepId();
+                String key = sagaName + "::" + stepId;
+                if (!sagas.containsKey(sagaName)) {
+                    throw new IllegalStateException("@CompensationSagaStep references unknown saga '" + sagaName + "' for step '" + stepId + "'");
+                }
+                SagaDefinition def = sagas.get(sagaName);
+                StepDefinition sd = def.steps.get(stepId);
+                if (sd == null) {
+                    throw new IllegalStateException("@CompensationSagaStep references unknown step id '" + stepId + "' in saga '" + sagaName + "'");
+                }
+                if (!seenKeys.add(key)) {
+                    throw new IllegalStateException("Duplicate @CompensationSagaStep mapping for saga '" + sagaName + "' step '" + stepId + "'");
+                }
+                // Override to external compensation
+                sd.compensateMethod = m;
+                sd.compensateInvocationMethod = resolveInvocationMethod(bean.getClass(), m);
+                sd.compensateBean = bean;
+            }
+        }
+
+        // Final validation after enriching with external steps/compensations
+        for (SagaDefinition def : sagas.values()) {
+            validateDag(def);
+            validateParameters(def);
+        }
+
         scanned = true;
     }
 

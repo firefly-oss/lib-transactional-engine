@@ -17,9 +17,11 @@ import java.lang.annotation.*;
  * Return type:
  * - Preferably Reactor Mono<T>, but plain T is also supported (it will be wrapped).
  *
- * Compensation method name must refer to a method on the same class. Compensation method signatures mirror the above;
- * when an argument is expected, the engine will pass either the original step input or the step result (if types match),
- * plus SagaContext when present. See README for details.
+ * Compensation can be declared in two ways:
+ * - In-class: `compensate` refers to a method on the same orchestrator class (traditional style).
+ * - External: via `@CompensationSagaStep(saga = ..., forStepId = ...)` on any Spring bean. When both are present, the external mapping takes precedence.
+ * Compensation method signatures mirror the above; when an argument is expected, the engine will pass either the original
+ * step input or the step result (if types match), plus SagaContext when present. See README for details.
  *
  * Duration configuration (updated):
  * - ISO-8601 String-based fields timeout() and backoff() are deprecated.
@@ -53,4 +55,10 @@ public @interface SagaStep {
     String idempotencyKey() default "";
     /** Hint that this step performs CPU-bound work and can be scheduled on a CPU scheduler. */
     boolean cpuBound() default false;
+
+    // Compensation-specific overrides (optional). Use negative values to indicate "inherit from step".
+    int compensationRetry() default -1;
+    long compensationTimeoutMs() default -1;
+    long compensationBackoffMs() default -1;
+    boolean compensationCritical() default false;
 }
