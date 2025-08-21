@@ -5,14 +5,16 @@ This document explains how the in-memory saga orchestration library is built and
 If you are new to the library, start with README.md for a quick overview, then come back here for the deeper internals. For a hands-on, end-to-end walkthrough, see docs/TUTORIAL.md.
 
 ## Table of contents
-- Goals and constraints
-- Architectural overview (with diagrams)
-- How execution works (step-by-step)
-- Key design decisions
-- Performance and memory techniques
-- Configuration knobs and trade-offs
-- Memory footprint considerations
-- Future extensions (non-goals)
+- [Goals and constraints](#goals-and-constraints)
+- [Architectural overview](#architectural-overview)
+- [How execution works](#how-execution-works)
+  - [Compensation policies](#compensation-policies)
+- [Key design decisions](#key-design-decisions)
+- [Performance and memory techniques](#performance-and-memory-techniques)
+- [Memory footprint considerations](#memory-footprint-considerations)
+- [Configuration knobs and trade-offs](#configuration-knobs-and-trade-offs)
+- [Class relationships (simplified)](#class-relationships-simplified)
+- [Future extensions (non-goals today)](#future-extensions-non-goals-today)
 
 ## Goals and constraints
 - In-memory orchestration: a single-JVM library with no persistence of saga state.
@@ -97,7 +99,7 @@ flowchart LR
 Retry/backoff/timeout flow for a single step:
 
 ```mermaid
-flowchart TD
+flowchart LR
   S[Start Step] --> I{Idempotency key already in context?}
   I -- yes --> SK[Skip step] --> End
   I -- no --> A[Attempt 1]
@@ -111,6 +113,46 @@ flowchart TD
 ```
 
 Compensation order is the reverse of the actual completion order of successful steps. With policy GROUPED_PARALLEL, compensations may run in parallel within the same original layer to speed up rollbacks.
+
+### Compensation policies
+
+Two compensation policies are supported by the engine:
+- STRICT_SEQUENTIAL (default): compensate one step at a time in the exact reverse completion order.
+- GROUPED_PARALLEL: compensate in batches by original execution layer, running independent compensations in parallel within the batch. This reduces rollback time for wide layers.
+
+When to use which
+- Use STRICT_SEQUENTIAL when compensations must respect a strict ordering due to business invariants or side‑effects, or when participants are sensitive to concurrency.
+- Use GROUPED_PARALLEL when there are many independent steps to undo, compensations are idempotent and safe in parallel, and you want to minimize total rollback time.
+
+How to configure
+- Default Spring configuration wires STRICT_SEQUENTIAL. Override the SagaEngine bean to switch:
+
+```java
+@Configuration
+class EnginePolicyConfig {
+  @Bean
+  SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events) {
+    return new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
+  }
+}
+```
+
+- In tests or programmatic usage:
+```java
+SagaEngine engine = new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
+```
+
+Visual (grouped compensation by layer)
+```mermaid
+flowchart LR
+  subgraph L3[Layer 3]
+    C1[compensate S1] & C2[compensate S2] & C3[compensate S3]
+  end
+  subgraph L2[Layer 2]
+    C4[compensate A]
+  end
+  L3 --> L2
+```
 
 ## Key design decisions
 

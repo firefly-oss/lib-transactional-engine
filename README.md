@@ -289,7 +289,7 @@ More readable way to specify timeouts and backoffs using `java.time.Duration`:
 ```
 
 ## Architecture at a glance
-This section is a quick, visual guide to how everything fits together. It is designed to be read in under 3 minutes. If you want the in‑depth mechanics, see "How it works" just below. For the complete, didactic architecture document with multiple Mermaid diagrams, see docs/ARCHITECTURE.md.
+This section is a quick, visual guide to how everything fits together. It is designed to be read in under 3 minutes. If you want the in‑depth mechanics, see "How it works" just below. For the complete, didactic architecture document with multiple Mermaid diagrams, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 TL;DR
 - You write a Saga class with @Saga and @SagaStep methods.
@@ -361,7 +361,8 @@ Glossary (short and practical)
 - HttpCall: tiny helper to propagate correlation/custom headers to WebClient.
 
 Where to go deeper
-- See docs/ARCHITECTURE.md for the full architecture document with detailed explanations and multiple Mermaid diagrams.
+- See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full architecture document with detailed explanations and multiple Mermaid diagrams.
+- See [docs/SAGA-vs-TCC.md](docs/SAGA-vs-TCC.md) for a practical comparison of Sagas vs TCC and why this library chooses Sagas.
 - See "How it works" for discovery, DAG layering, retries/backoff/timeout, and compensation semantics.
 - See the Annotations reference for exact attributes and supported method signatures.
 - See the tutorial for a full end‑to‑end example with visuals and troubleshooting tips.
@@ -382,6 +383,34 @@ Where to go deeper
     2) the step result if compatible by type; else
     3) null (especially when only `SagaContext` is expected).
 
+
+## Compensation policies
+
+Two compensation strategies are available:
+- STRICT_SEQUENTIAL (default) — compensates one step at a time in exact reverse completion order.
+- GROUPED_PARALLEL — compensates in batches by original DAG layer, running independent compensations in parallel within each batch to shorten rollback time for wide layers.
+
+When to use
+- Prefer STRICT_SEQUENTIAL when compensations must respect strict business ordering or when downstreams are sensitive to parallel calls.
+- Prefer GROUPED_PARALLEL when many independent steps need to be undone and compensations are idempotent and safe to run in parallel; this significantly reduces total rollback time.
+
+How to select the policy
+- Default Spring config wires STRICT_SEQUENTIAL. Override the SagaEngine bean to enable grouped parallel compensation:
+```java
+@Configuration
+class EnginePolicyConfig {
+  @Bean
+  SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events) {
+    return new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
+  }
+}
+```
+- Or construct directly (tests/programmatic):
+```java
+SagaEngine engine = new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
+```
+
+See also: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for diagrams and deeper discussion.
 
 ## Installation
 Maven
@@ -526,7 +555,7 @@ public class PaymentService {
 ## Complete step-by-step tutorial
 If you want a full, realistic, end-to-end tutorial that walks through every feature (DAG modeling, retries/backoff/timeouts, per-run idempotency, compensation semantics, HTTP header propagation, observability hooks, parameter injection, and the new StepInputs DSL with lazy resolvers), read:
 
-- docs/TUTORIAL.md — Travel Booking Saga deep-dive
+- [docs/TUTORIAL.md](docs/TUTORIAL.md) — Travel Booking Saga deep-dive
 
 It includes:
 - Visual DAG and compensation plan
