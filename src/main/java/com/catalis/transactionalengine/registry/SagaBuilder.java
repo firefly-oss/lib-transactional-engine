@@ -91,6 +91,11 @@ public class SagaBuilder {
         private StepHandler<?,?> handler;
         private Method stepMethod; // optional: allow method-based in future
         private BiFunction<Object, SagaContext, Mono<Void>> compensationFn;
+        // Compensation-specific optional overrides for DSL usage
+        private Integer compensationRetry = null;
+        private Duration compensationBackoff = null;
+        private Duration compensationTimeout = null;
+        private boolean compensationCritical = false;
 
         private Step(String id) {
             this.id = id;
@@ -102,14 +107,22 @@ public class SagaBuilder {
         }
 
         public Step retry(int retry) { this.retry = retry; return this; }
-        @Deprecated
-        public Step backoffMs(long backoffMs) { this.backoff = backoffMs > 0 ? Duration.ofMillis(backoffMs) : null; return this; }
-        @Deprecated
-        public Step timeoutMs(long timeoutMs) { this.timeout = timeoutMs > 0 ? Duration.ofMillis(timeoutMs) : null; return this; }
         public Step backoff(Duration backoff) { this.backoff = backoff; return this; }
+        /** Convenience overload: set backoff in milliseconds. */
+        public Step backoffMs(long ms) { this.backoff = (ms >= 0 ? Duration.ofMillis(ms) : null); return this; }
         public Step timeout(Duration timeout) { this.timeout = timeout; return this; }
+        /** Convenience overload: set timeout in milliseconds. */
+        public Step timeoutMs(long ms) { this.timeout = (ms >= 0 ? Duration.ofMillis(ms) : null); return this; }
         public Step idempotencyKey(String key) { this.idempotencyKey = key != null ? key : ""; return this; }
         public Step compensateName(String name) { this.compensateName = name != null ? name : ""; return this; }
+
+        // Compensation-specific overrides for DSL
+        public Step compensationRetry(int retry) { this.compensationRetry = retry; return this; }
+        public Step compensationBackoff(Duration d) { this.compensationBackoff = d; return this; }
+        public Step compensationBackoffMs(long ms) { this.compensationBackoff = (ms >= 0 ? Duration.ofMillis(ms) : null); return this; }
+        public Step compensationTimeout(Duration d) { this.compensationTimeout = d; return this; }
+        public Step compensationTimeoutMs(long ms) { this.compensationTimeout = (ms >= 0 ? Duration.ofMillis(ms) : null); return this; }
+        public Step compensationCritical(boolean critical) { this.compensationCritical = critical; return this; }
 
         // Core StepHandler setter
         public Step handler(StepHandler<?,?> handler) { this.handler = handler; return this; }
@@ -202,6 +215,11 @@ public class SagaBuilder {
                 };
             }
             sd.handler = handler;
+            // Apply DSL-provided compensation overrides when defined
+            if (this.compensationRetry != null) sd.compensationRetry = this.compensationRetry;
+            if (this.compensationBackoff != null) sd.compensationBackoff = this.compensationBackoff;
+            if (this.compensationTimeout != null) sd.compensationTimeout = this.compensationTimeout;
+            sd.compensationCritical = this.compensationCritical;
             if (saga.steps.putIfAbsent(id, sd) != null) {
                 throw new IllegalStateException("Duplicate step id '" + id + "' in saga '" + saga.name + "'");
             }

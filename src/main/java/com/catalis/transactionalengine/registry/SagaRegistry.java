@@ -65,17 +65,9 @@ public class SagaRegistry {
                 if (stepAnn == null) continue;
                 Duration backoff = null;
                 Duration timeout = null;
-                // Prefer millis if provided for annotations; else consider legacy ISO-8601 strings; else defaults
-                if (stepAnn.backoffMs() > 0) {
-                    backoff = Duration.ofMillis(stepAnn.backoffMs());
-                } else if (StringUtils.hasText(stepAnn.backoff())) {
-                    try { backoff = Duration.parse(stepAnn.backoff()); } catch (Exception ignored) {}
-                }
-                if (stepAnn.timeoutMs() > 0) {
-                    timeout = Duration.ofMillis(stepAnn.timeoutMs());
-                } else if (StringUtils.hasText(stepAnn.timeout())) {
-                    try { timeout = Duration.parse(stepAnn.timeout()); } catch (Exception ignored) {}
-                }
+                // Read ms fields from annotations when provided; otherwise defaults in StepDefinition will apply
+                if (stepAnn.backoffMs() >= 0) backoff = Duration.ofMillis(stepAnn.backoffMs());
+                if (stepAnn.timeoutMs() >= 0) timeout = Duration.ofMillis(stepAnn.timeoutMs());
                 StepDefinition stepDef = new StepDefinition(
                         stepAnn.id(),
                         stepAnn.compensate(),
@@ -137,16 +129,9 @@ public class SagaRegistry {
                 }
                 Duration backoff = null;
                 Duration timeout = null;
-                if (es.backoffMs() > 0) {
-                    backoff = Duration.ofMillis(es.backoffMs());
-                } else if (org.springframework.util.StringUtils.hasText(es.backoff())) {
-                    try { backoff = Duration.parse(es.backoff()); } catch (Exception ignored) {}
-                }
-                if (es.timeoutMs() > 0) {
-                    timeout = Duration.ofMillis(es.timeoutMs());
-                } else if (org.springframework.util.StringUtils.hasText(es.timeout())) {
-                    try { timeout = Duration.parse(es.timeout()); } catch (Exception ignored) {}
-                }
+                // Read ms fields from external annotations when provided; otherwise defaults in StepDefinition will apply
+                if (es.backoffMs() >= 0) backoff = Duration.ofMillis(es.backoffMs());
+                if (es.timeoutMs() >= 0) timeout = Duration.ofMillis(es.timeoutMs());
                 StepDefinition stepDef = new StepDefinition(
                         es.id(),
                         es.compensate(),
