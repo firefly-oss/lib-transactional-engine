@@ -116,6 +116,20 @@ public class SagaEngine {
 
         // Build layers using indegree
         List<List<String>> layers = buildLayers(saga);
+        if (log.isInfoEnabled()) {
+            int stepsCount = saga.steps != null ? saga.steps.size() : 0;
+            int layersCount = layers.size();
+            String layerSizes = layers.stream().map(l -> Integer.toString(l.size())).collect(java.util.stream.Collectors.joining(","));
+            log.info(json(
+                    "saga_lifecycle","start",
+                    "saga", sagaName,
+                    "sagaId", sagaId,
+                    "steps_count", Integer.toString(stepsCount),
+                    "layers_count", Integer.toString(layersCount),
+                    "layer_sizes", layerSizes,
+                    "policy", String.valueOf(policy)
+            ));
+        }
         List<String> completionOrder = Collections.synchronizedList(new ArrayList<>());
         AtomicBoolean failed = new AtomicBoolean(false);
         Map<String, Throwable> stepErrors = new ConcurrentHashMap<>();
@@ -166,6 +180,20 @@ public class SagaEngine {
 
         // Build layers using indegree
         List<List<String>> layers = buildLayers(saga);
+        if (log.isInfoEnabled()) {
+            int stepsCount = saga.steps != null ? saga.steps.size() : 0;
+            int layersCount = layers.size();
+            String layerSizes = layers.stream().map(l -> Integer.toString(l.size())).collect(java.util.stream.Collectors.joining(","));
+            log.info(json(
+                    "saga_lifecycle","start",
+                    "saga", sagaName,
+                    "sagaId", sagaId,
+                    "steps_count", Integer.toString(stepsCount),
+                    "layers_count", Integer.toString(layersCount),
+                    "layer_sizes", layerSizes,
+                    "policy", String.valueOf(policy)
+            ));
+        }
         List<String> completionOrder = Collections.synchronizedList(new ArrayList<>());
         AtomicBoolean failed = new AtomicBoolean(false);
         Map<String, Throwable> stepErrors = new ConcurrentHashMap<>();
@@ -329,12 +357,17 @@ public class SagaEngine {
                 (ctx != null ? ctx : new com.catalis.transactionalengine.core.SagaContext());
         // Always set the saga name on the context for visibility
         finalCtx.setSagaName(saga.name);
-        String sagaName = saga.name;
+
+        // Perform optional expansion: clone steps for inputs marked with ExpandEach
+        final Map<String, Object> overrideInputs = new LinkedHashMap<>();
+        SagaDefinition workSaga = maybeExpandSaga(saga, inputs, overrideInputs, finalCtx);
+
+        String sagaName = workSaga.name;
         String sagaId = finalCtx.correlationId();
         events.onStart(sagaName, sagaId);
         events.onStart(sagaName, sagaId, finalCtx);
 
-        List<List<String>> layers = buildLayers(saga);
+        List<List<String>> layers = buildLayers(workSaga);
         List<String> completionOrder = Collections.synchronizedList(new ArrayList<>());
         AtomicBoolean failed = new AtomicBoolean(false);
         Map<String, Throwable> stepErrors = new ConcurrentHashMap<>();
@@ -343,10 +376,14 @@ public class SagaEngine {
         return Flux.fromIterable(layers)
                 .concatMap(layer -> {
                     if (failed.get()) return Mono.empty();
-                    var executions = layer.stream().map(stepId ->
-                            executeStep(sagaName, saga, stepId, inputs != null ? inputs.resolveFor(stepId, finalCtx) : null, finalCtx)
-                                    .doOnSuccess(v -> completionOrder.add(stepId))
-                                    .onErrorResume(err -> { failed.set(true); stepErrors.put(stepId, err); return Mono.empty(); })
+                    var executions = layer.stream().map(stepId -> {
+                                Object in = overrideInputs.containsKey(stepId)
+                                        ? overrideInputs.get(stepId)
+                                        : (inputs != null ? inputs.resolveFor(stepId, finalCtx) : null);
+                                return executeStep(sagaName, workSaga, stepId, in, finalCtx)
+                                        .doOnSuccess(v -> completionOrder.add(stepId))
+                                        .onErrorResume(err -> { failed.set(true); stepErrors.put(stepId, err); return Mono.empty(); });
+                            }
                     ).toList();
                     return Mono.when(executions);
                 })
@@ -354,10 +391,15 @@ public class SagaEngine {
                     boolean success = !failed.get();
                     events.onCompleted(sagaName, sagaId, success);
                     if (success) {
-                        return Mono.just(SagaResult.from(sagaName, finalCtx, compensated, stepErrors, saga.steps.keySet()));
+                        return Mono.just(SagaResult.from(sagaName, finalCtx, compensated, stepErrors, workSaga.steps.keySet()));
                     }
                     Map<String, Object> materialized = inputs != null ? inputs.materializedView(finalCtx) : Map.of();
-                    return compensate(sagaName, saga, completionOrder, materialized, finalCtx)
+                    if (!overrideInputs.isEmpty()) {
+                        Map<String, Object> mat2 = new LinkedHashMap<>(materialized);
+                        mat2.putAll(overrideInputs);
+                        materialized = mat2;
+                    }
+                    return compensate(sagaName, workSaga, completionOrder, materialized, finalCtx)
                             .then(Mono.defer(() -> {
                                 // derive compensated flags from context statuses
                                 for (String id : completionOrder) {
@@ -365,7 +407,7 @@ public class SagaEngine {
                                         compensated.put(id, true);
                                     }
                                 }
-                                return Mono.just(SagaResult.from(sagaName, finalCtx, compensated, stepErrors, saga.steps.keySet()));
+                                return Mono.just(SagaResult.from(sagaName, finalCtx, compensated, stepErrors, workSaga.steps.keySet()));
                             }));
                 }));
     }
@@ -428,7 +470,13 @@ public class SagaEngine {
         // Idempotency within run
         if (sd.idempotencyKey != null && !sd.idempotencyKey.isEmpty()) {
             if (ctx.hasIdempotencyKey(sd.idempotencyKey)) {
-                log.debug("[sagaId={}] [stepId={}] Skipping due to idempotency key present", ctx.correlationId(), stepId);
+                log.info(json(
+                                "saga_step","skipped_idempotent",
+                                "saga", sagaName,
+                                "sagaId", ctx.correlationId(),
+                                "stepId", stepId,
+                                "reason", "idempotency_key_present"
+                        ));
                 // Mark as done to reflect that the business effect was already applied in this run
                 ctx.setStatus(stepId, StepStatus.DONE);
                 events.onStepSkippedIdempotent(sagaName, ctx.correlationId(), stepId);
@@ -445,6 +493,26 @@ public class SagaEngine {
         Mono<Object> execution;
         long timeoutMs = sd.timeout != null ? sd.timeout.toMillis() : 0L;
         long backoffMs = sd.backoff != null ? sd.backoff.toMillis() : 0L;
+        if (log.isInfoEnabled()) {
+            String mode = sd.handler != null ? "handler" : "method";
+            String inputType = input != null ? input.getClass().getName() : "null";
+            String inputPreview = summarize(input, 200);
+            log.info(json(
+                    "saga_step","exec_config",
+                    "saga", sagaName,
+                    "sagaId", ctx.correlationId(),
+                    "stepId", stepId,
+                    "mode", mode,
+                    "timeoutMs", Long.toString(timeoutMs),
+                    "retry", Integer.toString(sd.retry),
+                    "backoffMs", Long.toString(backoffMs),
+                    "jitter", Boolean.toString(sd.jitter),
+                    "jitterFactor", Double.toString(sd.jitterFactor),
+                    "cpuBound", Boolean.toString(sd.cpuBound),
+                    "input_type", inputType,
+                    "input_preview", inputPreview
+            ));
+        }
         if (sd.handler != null) {
             execution = attemptCallHandler(sd, input, ctx, timeoutMs, sd.retry, backoffMs, sd.jitter, sd.jitterFactor, stepId);
         } else {
@@ -457,6 +525,18 @@ public class SagaEngine {
         }
         return execution
                 .doOnNext(res -> {
+                    if (log.isInfoEnabled()) {
+                        String resultType = res != null ? res.getClass().getName() : "null";
+                        String resultPreview = summarize(res, 200);
+                        log.info(json(
+                                "saga_step","result",
+                                "saga", sagaName,
+                                "sagaId", ctx.correlationId(),
+                                "stepId", stepId,
+                                "result_type", resultType,
+                                "result_preview", resultPreview
+                        ));
+                    }
                     ctx.putResult(stepId, res);
                     // If this step was defined by method, support @SetVariable; handler-based steps skip this
                     if (sd.stepMethod != null) {
@@ -480,7 +560,20 @@ public class SagaEngine {
                     long latency = System.currentTimeMillis() - start;
                     ctx.setLatency(stepId, latency);
                     ctx.setStatus(stepId, StepStatus.FAILED);
-                    events.onStepFailed(sagaName, ctx.correlationId(), stepId, err, ctx.getAttempts(stepId), latency);
+                    int attempts = ctx.getAttempts(stepId);
+                    String errClass = err.getClass().getName();
+                    String errMsg = safeString(err.getMessage(), 500);
+                    log.warn(json(
+                            "saga_step","error",
+                            "saga", sagaName,
+                            "sagaId", ctx.correlationId(),
+                            "stepId", stepId,
+                            "attempts", Integer.toString(attempts),
+                            "latencyMs", Long.toString(latency),
+                            "error_class", errClass,
+                            "error_msg", errMsg
+                    ));
+                    events.onStepFailed(sagaName, ctx.correlationId(), stepId, err, attempts, latency);
                 });
     }
 
@@ -521,6 +614,182 @@ public class SagaEngine {
         double max = backoffMs * (1.0d + f);
         long v = Math.round(ThreadLocalRandom.current().nextDouble(min, max));
         return Math.max(0L, v);
+    }
+
+    private static String summarize(Object obj, int max) {
+        if (obj == null) return "null";
+        String s;
+        try { s = String.valueOf(obj); } catch (Throwable ignore) { s = obj.getClass().getName(); }
+        return safeString(s, max);
+    }
+
+    private static String safeString(String s, int max) {
+        if (s == null) return "";
+        if (s.length() <= max) return s;
+        return s.substring(0, Math.max(0, max)) + "...";
+    }
+
+    private static String json(String... kv) {
+        StringBuilder sb = new StringBuilder(256);
+        sb.append('{');
+        for (int i = 0; i + 1 < kv.length; i += 2) {
+            if (i > 0) sb.append(',');
+            sb.append('"').append(esc(kv[i])).append('"').append(':');
+            sb.append('"').append(esc(kv[i + 1] == null ? "" : kv[i + 1])).append('"');
+        }
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private static String esc(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Optionally expand steps whose input was marked with ExpandEach at build time via StepInputs.
+     * Only concrete values are inspected (no resolver evaluation) to avoid dependency on previous results.
+     * Returns the original saga if no expansion is necessary; otherwise returns a derived definition.
+     */
+    private SagaDefinition maybeExpandSaga(SagaDefinition saga, StepInputs inputs, Map<String, Object> overrideInputs, SagaContext ctx) {
+        if (inputs == null) return saga;
+        // Discover which steps are marked for expansion
+        Map<String, ExpandEach> toExpand = new LinkedHashMap<>();
+        for (String stepId : saga.steps.keySet()) {
+            Object raw = inputs.rawValue(stepId);
+            if (raw instanceof ExpandEach ee) {
+                toExpand.put(stepId, ee);
+            }
+        }
+        if (toExpand.isEmpty()) return saga;
+
+        SagaDefinition ns = new SagaDefinition(saga.name, saga.bean, saga.target, saga.layerConcurrency);
+
+        // Build map of expansions ids per original
+        Map<String, List<String>> expandedIds = new LinkedHashMap<>();
+
+        // First pass: add clones or skip originals marked for expansion
+        for (StepDefinition sd : saga.steps.values()) {
+            String id = sd.id;
+            ExpandEach ee = toExpand.get(id);
+            if (ee == null) {
+                // Will add later after dependencies are rewritten
+                continue;
+            }
+            List<?> items = ee.items();
+            List<String> clones = new ArrayList<>();
+            for (int i = 0; i < items.size(); i++) {
+                Object item = items.get(i);
+                String suffix = ee.idSuffixFn().map(fn -> safeSuffix(fn.apply(item))).orElse("#" + i);
+                String cloneId = id + suffix;
+                clones.add(cloneId);
+                // dependsOn will be rewritten in second pass; start with original's dependsOn
+                StepDefinition csd = new StepDefinition(
+                        cloneId,
+                        sd.compensateName,
+                        new ArrayList<>(sd.dependsOn),
+                        sd.retry,
+                        sd.backoff,
+                        sd.timeout,
+                        sd.idempotencyKey,
+                        sd.jitter,
+                        sd.jitterFactor,
+                        sd.cpuBound,
+                        sd.stepMethod
+                );
+                csd.stepInvocationMethod = sd.stepInvocationMethod;
+                csd.stepBean = sd.stepBean;
+                csd.compensateMethod = sd.compensateMethod;
+                csd.compensateInvocationMethod = sd.compensateInvocationMethod;
+                csd.compensateBean = sd.compensateBean;
+                csd.handler = sd.handler;
+                csd.compensationRetry = sd.compensationRetry;
+                csd.compensationBackoff = sd.compensationBackoff;
+                csd.compensationTimeout = sd.compensationTimeout;
+                csd.compensationCritical = sd.compensationCritical;
+                if (ns.steps.putIfAbsent(cloneId, csd) != null) {
+                    throw new IllegalStateException("Duplicate step id '" + cloneId + "' when expanding '" + id + "'");
+                }
+                overrideInputs.put(cloneId, item);
+            }
+            expandedIds.put(id, clones);
+        }
+
+        // Second pass: add non-expanded steps and rewrite their dependencies; also rewrite clone deps
+        for (StepDefinition sd : saga.steps.values()) {
+            String id = sd.id;
+            if (toExpand.containsKey(id)) {
+                // Update each clone deps
+                List<String> clones = expandedIds.getOrDefault(id, List.of());
+                for (String cloneId : clones) {
+                    StepDefinition csd = ns.steps.get(cloneId);
+                    csd.dependsOn.clear();
+                    for (String dep : sd.dependsOn) {
+                        List<String> repl = expandedIds.get(dep);
+                        if (repl != null) csd.dependsOn.addAll(repl);
+                        else csd.dependsOn.add(dep);
+                    }
+                }
+                continue;
+            }
+            // Not expanded: copy and rewrite deps
+            List<String> newDeps = new ArrayList<>();
+            for (String dep : sd.dependsOn) {
+                List<String> repl = expandedIds.get(dep);
+                if (repl != null) newDeps.addAll(repl);
+                else newDeps.add(dep);
+            }
+            StepDefinition copy = new StepDefinition(
+                    id,
+                    sd.compensateName,
+                    newDeps,
+                    sd.retry,
+                    sd.backoff,
+                    sd.timeout,
+                    sd.idempotencyKey,
+                    sd.jitter,
+                    sd.jitterFactor,
+                    sd.cpuBound,
+                    sd.stepMethod
+            );
+            copy.stepInvocationMethod = sd.stepInvocationMethod;
+            copy.stepBean = sd.stepBean;
+            copy.compensateMethod = sd.compensateMethod;
+            copy.compensateInvocationMethod = sd.compensateInvocationMethod;
+            copy.compensateBean = sd.compensateBean;
+            copy.handler = sd.handler;
+            copy.compensationRetry = sd.compensationRetry;
+            copy.compensationBackoff = sd.compensationBackoff;
+            copy.compensationTimeout = sd.compensationTimeout;
+            copy.compensationCritical = sd.compensationCritical;
+            if (ns.steps.putIfAbsent(id, copy) != null) {
+                throw new IllegalStateException("Duplicate step id '" + id + "' while copying saga");
+            }
+        }
+        return ns;
+    }
+
+    private static String safeSuffix(String s) {
+        if (s == null || s.isBlank()) return "";
+        // Avoid spaces to keep ids readable in graphs
+        return ":" + s.replaceAll("\\s+", "_");
     }
 
     /**
@@ -688,6 +957,16 @@ public class SagaEngine {
                                   List<String> completionOrder,
                                   Map<String, Object> stepInputs,
                                   SagaContext ctx) {
+        if (log.isInfoEnabled()) {
+            int completedCount = completionOrder != null ? completionOrder.size() : 0;
+            log.info(json(
+                        "saga_compensation","start",
+                        "saga", sagaName,
+                        "sagaId", ctx.correlationId(),
+                        "completed_steps_count", Integer.toString(completedCount),
+                        "policy", String.valueOf(policy)
+                    ));
+        }
         return switch (policy) {
             case GROUPED_PARALLEL -> compensateGroupedByLayer(sagaName, saga, completionOrder, stepInputs, ctx);
             case RETRY_WITH_BACKOFF -> compensateSequentialWithRetries(sagaName, saga, completionOrder, stepInputs, ctx);

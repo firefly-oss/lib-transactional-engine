@@ -69,6 +69,14 @@ public final class StepInputs {
     }
 
     /**
+     * Return the raw concrete value configured for a step id if present (without evaluating resolvers).
+     * Package-private: intended for engine use only.
+     */
+    Object rawValue(String stepId) {
+        return values.get(stepId);
+    }
+
+    /**
      * Resolve the input for a given step id, evaluating a resolver if present and caching the result.
      * Package-private: intended for engine use only.
      */
