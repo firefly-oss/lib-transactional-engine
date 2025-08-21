@@ -57,8 +57,7 @@ Example `@SagaStep` declaration
   compensate = "compensationMethodName",
   dependsOn = {"prevStepId1", "prevStepId2"}, // optional
   retry = 0,               // optional fixed retry count
-  backoffMs = 0,           // optional fixed backoff in ms (or use Duration in builder)
-  timeoutMs = 0,           // optional per-attempt timeout in ms
+  // Prefer Duration-based configuration via SagaBuilder for backoff/timeout
   idempotencyKey = "expr" // optional key to skip step within the same run
 )
 ```
@@ -90,7 +89,7 @@ Declare saga steps outside the orchestrator class using `@ExternalSagaStep`. Thi
 
 Key points:
 - Place `@ExternalSagaStep` on any Spring bean method.
-- Provide `saga = "SagaName"` and the `id` for the step. Other attributes mirror `@SagaStep` (dependsOn, retry, timeoutMs/backoffMs, idempotencyKey, etc.).
+- Provide `saga = "SagaName"` and the `id` for the step. Other attributes mirror `@SagaStep` (dependsOn, retry, idempotencyKey, etc.). For resilience, you can use ms-based fields in the annotations (`backoffMs`, `timeoutMs`) or configure via SagaBuilder using Duration-based methods.
 - You may also specify `compensate = "methodName"` on the same bean. An external `@CompensationSagaStep` on any bean can still override it (external compensation takes precedence over any in-class declaration).
 - Duplicated step ids (between in-class and external, or between two external beans) are rejected at startup.
 
@@ -180,14 +179,15 @@ boolean compensationOk = reserve.compensationError().isEmpty();
 ```
 
 ## Retry, backoff, timeout
-- Annotation attributes: `retry`, `backoffMs`, `timeoutMs` (millisecond values).
-- Programmatic API preferred for readability:
+- Configure resilience via SagaBuilder using Duration-based methods for readability:
   - `.retry(int attempts)`
   - `.backoff(Duration)`
   - `.timeout(Duration)`
+- Prefer Duration for clarity, but the DSL also provides millisecond overloads: `.backoffMs(long)` and `.timeoutMs(long)`.
+- When using annotations, you can use millisecond fields `backoffMs` and `timeoutMs`. Defaults: backoff=100ms, timeout=disabled (0). `retry` remains available in annotations.
 
 Tip
-- Prefer `Duration` methods in the builder for readability; keep ms attributes in annotations only for simple cases.
+- Use builder Duration methods for new code; avoid ms fields in annotations.
 
 ### Compensation-specific overrides (per step)
 Override resilience for compensations independently of the step using these `@SagaStep`/`@ExternalSagaStep` attributes:

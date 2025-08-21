@@ -137,7 +137,7 @@ import reactor.core.publisher.Mono;
 public class OrderSagaOrchestrator {
 
   // 5.1 Reserve funds (with compensation)
-  @SagaStep(id = "reserveFunds", compensate = "releaseFunds", retry = 2, backoffMs = 200, timeoutMs = 3_000)
+  @SagaStep(id = "reserveFunds", compensate = "releaseFunds", retry = 2)
   public Mono<String> reserveFunds(ReserveFundsCmd cmd, SagaContext ctx) {
     // Implemented in section 7 with HttpCall
     return Mono.just("funds-reservation-123");
@@ -159,7 +159,7 @@ public class OrderSagaOrchestrator {
   }
 
   // 5.3 Create order (depends on previous two)
-  @SagaStep(id = "createOrder", compensate = "cancelOrder", dependsOn = {"reserveFunds", "reserveInventory"}, timeoutMs = 2_000)
+  @SagaStep(id = "createOrder", compensate = "cancelOrder", dependsOn = {"reserveFunds", "reserveInventory"})
   public Mono<Long> createOrder(CreateOrderCmd cmd, SagaContext ctx) {
     return Mono.just(42L);
   }
@@ -178,7 +178,7 @@ public class OrderSagaOrchestrator {
 
 Notes:
 - Return type can be `Mono<T>` (preferred) or a plain `T` (wrapped automatically).
-- `retry`, `backoffMs`, `timeoutMs` are convenient annotation attributes. For complex configs, prefer the programmatic builder (see Reference Card) or inject them via external config.
+- Configure resilience via SagaBuilder using Duration-based methods (`retry(int)`, `backoff(Duration)`, `timeout(Duration)`) or, if you prefer milliseconds, the DSL overloads (`backoffMs(long)`, `timeoutMs(long)`). You can also configure via annotations using millisecond fields (`backoffMs`, `timeoutMs`). `retry` remains available in annotations.
 - `idempotencyKey` can be used to skip a step within the same run.
 
 External step example (@ExternalSagaStep) — place steps in any Spring bean and link them to the saga by name:
@@ -495,14 +495,12 @@ Notes
 
 ## 9) Resilience: retry, backoff, timeout, idempotency
 
-You can configure resilience per step using annotation attributes for convenience:
-- `retry = 2`
-- `backoffMs = 200`
-- `timeoutMs = 3_000`
-- `jitter = true`, `jitterFactor = 0.5d`
-- `idempotencyKey = "customer-123:reserveFunds"` (per‑run; prevents re‑executing a step with the same key)
+Prefer configuring resilience per step via SagaBuilder using Duration-based methods for readability and clarity:
+- Builder: `.retry(int)`, `.backoff(Duration)`, `.timeout(Duration)`, `.jitter(boolean)`, `.jitterFactor(double)` — or use ms-based overloads: `.backoffMs(long)`, `.timeoutMs(long)`.
+- Annotation support: `retry` remains available; you can also use millisecond fields (`backoffMs`, `timeoutMs`) when configuring via annotations.
+- `idempotencyKey` can be used to skip a step within the same run.
 
-For complex/dynamic flows, consider the programmatic builder (see Reference Card) to set `Duration`-based retry/backoff/timeout more readably.
+See the Reference Card for a builder example.
 
 Best practices:
 - Use timeouts on all remote calls; match step timeout to remote SLAs.
@@ -516,7 +514,7 @@ Compensation-specific overrides
 Example
 ```java
 @SagaStep(id = "createOrder", compensate = "cancelOrder",
-  retry = 2, backoffMs = 200,
+  retry = 2,
   compensationRetry = 3, compensationBackoffMs = 500, compensationTimeoutMs = 2_000, compensationCritical = true)
 Mono<Long> createOrder(@Input CreateOrderCmd cmd, SagaContext ctx) { /* ... */ }
 ```
@@ -619,7 +617,7 @@ class OrderSagaOrchestrator {
     this.payments = p; this.inventory = i; this.orders = o; this.notifications = n;
   }
 
-  @SagaStep(id = "reserveFunds", compensate = "releaseFunds", retry = 2, backoffMs = 200, timeoutMs = 3000)
+  @SagaStep(id = "reserveFunds", compensate = "releaseFunds", retry = 2)
   Mono<String> reserveFunds(@Input ReserveFundsCmd cmd, SagaContext ctx) { return payments.reserve(cmd, ctx); }
   Mono<Void> releaseFunds(@Input ReserveFundsCmd cmd, SagaContext ctx) { return payments.release(cmd, ctx); }
 

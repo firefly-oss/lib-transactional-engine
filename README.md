@@ -92,7 +92,7 @@ class OrderSaga {
     this.orders   = b.baseUrl("http://orders").build();
   }
 
-  @SagaStep(id = "reserveFunds", compensate = "releaseFunds", retry = 2, backoffMs = 200, timeoutMs = 3_000)
+  @SagaStep(id = "reserveFunds", compensate = "releaseFunds", retry = 2)
   Mono<String> reserveFunds(@Input ReserveFundsCmd cmd, SagaContext ctx) {
     return HttpCall.propagate(
       payments.post().uri("/reservations").bodyValue(cmd), ctx
@@ -209,7 +209,8 @@ Example
 @SagaStep(
   id = "createOrder",
   compensate = "cancelOrder",
-  retry = 2, backoffMs = 200, timeoutMs = 3_000,
+  retry = 2,
+  // Prefer Duration-based configuration via SagaBuilder for backoff/timeout
   compensationRetry = 3,
   compensationBackoffMs = 500,
   compensationTimeoutMs = 2_000,
@@ -356,13 +357,14 @@ Visuals and legend
 - Tutorial — hands‑on walkthrough: [docs/TUTORIAL.md](docs/TUTORIAL.md)
 - Reference Card — API and snippets: [docs/REFERENCE_CARD.md](docs/REFERENCE_CARD.md)
 - Architecture — internals and diagrams: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Deep dive into the engine: [docs/DEEP_DIVE_INTO_THE_ENGINE.md](docs/DEEP_DIVE_INTO_THE_ENGINE.md)
 - Sagas vs TCC — trade‑offs: [docs/SAGA-vs-TCC.md](docs/SAGA-vs-TCC.md)
 
 ## FAQ / Troubleshooting
 - Step processes a list and partial failure leaves previously inserted items — how to fix? See guidance below.
 - How do I propagate correlation and headers? Use `HttpCall.propagate(spec, ctx)` for WebClient, or `HttpCall.buildHeaders(ctx)` for other clients.
 - How do I pass values between steps? Inject them with `@FromStep("stepId")` or store them using `@SetVariable("...")` and read with `@Variable`.
-- How do retries/backoff/timeout work? Configure per step via annotation attributes (`retry`, `backoffMs`, `timeoutMs`).
+- How do retries/backoff/timeout work? You can configure via SagaBuilder with Duration-based methods (`backoff(Duration)`, `timeout(Duration)`) and `retry(int)`, or via the DSL millisecond overloads (`backoffMs(long)`, `timeoutMs(long)`), or via annotations using millisecond fields (`backoffMs`, `timeoutMs`). `retry` remains available in annotations.
 - Can I define steps/compensations outside the orchestrator class? Yes — use `@ExternalSagaStep` and `@CompensationSagaStep` to declare them on any Spring bean.
 - Does the engine persist state? No — it is in‑memory and intended for short‑lived orchestrations.
 
