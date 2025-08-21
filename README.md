@@ -289,7 +289,7 @@ More readable way to specify timeouts and backoffs using `java.time.Duration`:
 ```
 
 ## Architecture at a glance
-This section is a quick, visual guide to how everything fits together. It is designed to be read in under 3 minutes. If you want the in‑depth mechanics, see "How it works" just below.
+This section is a quick, visual guide to how everything fits together. It is designed to be read in under 3 minutes. If you want the in‑depth mechanics, see "How it works" just below. For the complete, didactic architecture document with multiple Mermaid diagrams, see docs/ARCHITECTURE.md.
 
 TL;DR
 - You write a Saga class with @Saga and @SagaStep methods.
@@ -361,6 +361,7 @@ Glossary (short and practical)
 - HttpCall: tiny helper to propagate correlation/custom headers to WebClient.
 
 Where to go deeper
+- See docs/ARCHITECTURE.md for the full architecture document with detailed explanations and multiple Mermaid diagrams.
 - See "How it works" for discovery, DAG layering, retries/backoff/timeout, and compensation semantics.
 - See the Annotations reference for exact attributes and supported method signatures.
 - See the tutorial for a full end‑to‑end example with visuals and troubleshooting tips.
@@ -525,7 +526,7 @@ public class PaymentService {
 ## Complete step-by-step tutorial
 If you want a full, realistic, end-to-end tutorial that walks through every feature (DAG modeling, retries/backoff/timeouts, per-run idempotency, compensation semantics, HTTP header propagation, observability hooks, parameter injection, and the new StepInputs DSL with lazy resolvers), read:
 
-- TUTORIAL.md — Travel Booking Saga deep-dive
+- docs/TUTORIAL.md — Travel Booking Saga deep-dive
 
 It includes:
 - Visual DAG and compensation plan
