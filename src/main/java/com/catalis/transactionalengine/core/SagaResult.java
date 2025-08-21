@@ -29,7 +29,9 @@ public final class SagaResult {
             Object result,
             Throwable error,
             boolean compensated,
-            Instant startedAt
+            Instant startedAt,
+            Object compensationResult,
+            Throwable compensationError
     ) {}
 
     private SagaResult(
@@ -131,7 +133,9 @@ public final class SagaResult {
                                 ctx.getResult(k),
                                 stepErrors.get(k),
                                 Boolean.TRUE.equals(compensatedFlags.get(k)),
-                                ctx.getStepStartedAt(k)
+                                ctx.getStepStartedAt(k),
+                                ctx.getCompensationResult(k),
+                                ctx.getCompensationError(k)
                         ),
                         (a, b) -> a,
                         LinkedHashMap::new
@@ -169,7 +173,9 @@ public final class SagaResult {
                     ctx.getResult(k),
                     stepErrors.get(k),
                     Boolean.TRUE.equals(compensatedFlags.get(k)),
-                    ctx.getStepStartedAt(k)
+                    ctx.getStepStartedAt(k),
+                    ctx.getCompensationResult(k),
+                    ctx.getCompensationError(k)
             ));
         }
         boolean success = stepErrors.isEmpty();

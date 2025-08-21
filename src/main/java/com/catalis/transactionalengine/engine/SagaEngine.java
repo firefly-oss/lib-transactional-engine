@@ -752,7 +752,7 @@ public class SagaEngine {
                         ctx.setStatus(stepId, StepStatus.COMPENSATED);
                         events.onCompensated(sagaName, ctx.correlationId(), stepId, null);
                     })
-                    .doOnError(err -> events.onCompensated(sagaName, ctx.correlationId(), stepId, err))
+                    .doOnError(err -> { ctx.putCompensationError(stepId, err); events.onCompensated(sagaName, ctx.correlationId(), stepId, err); })
                     .onErrorResume(err -> Mono.empty());
         }
         Method comp = sd.compensateInvocationMethod != null ? sd.compensateInvocationMethod : sd.compensateMethod;
@@ -760,11 +760,12 @@ public class SagaEngine {
         Object arg = resolveCompensationArg(comp, stepInputs.get(stepId), ctx.getResult(stepId));
         Object targetBean = sd.compensateBean != null ? sd.compensateBean : saga.bean;
         return invokeMono(targetBean, comp, arg, ctx)
+                .doOnNext(obj -> ctx.putCompensationResult(stepId, obj))
                 .doOnSuccess(v -> {
                     ctx.setStatus(stepId, StepStatus.COMPENSATED);
                     events.onCompensated(sagaName, ctx.correlationId(), stepId, null);
                 })
-                .doOnError(err -> events.onCompensated(sagaName, ctx.correlationId(), stepId, err))
+                .doOnError(err -> { ctx.putCompensationError(stepId, err); events.onCompensated(sagaName, ctx.correlationId(), stepId, err); })
                 .onErrorResume(err -> Mono.empty())
                 .then();
     }
@@ -801,6 +802,7 @@ public class SagaEngine {
                     .thenReturn(true)
                     .doOnSuccess(v -> { ctx.setStatus(stepId, StepStatus.COMPENSATED); events.onCompensated(sagaName, ctx.correlationId(), stepId, null); })
                     .onErrorResume(err -> {
+                        ctx.putCompensationError(stepId, err);
                         events.onCompensated(sagaName, ctx.correlationId(), stepId, err);
                         return Mono.just(false);
                     });
@@ -810,9 +812,10 @@ public class SagaEngine {
         Object arg = resolveCompensationArg(comp, stepInputs.get(stepId), ctx.getResult(stepId));
         Object targetBean = sd.compensateBean != null ? sd.compensateBean : saga.bean;
         return attemptCompensateMethod(targetBean, comp, sd.compensateMethod, arg, ctx, p.timeoutMs, p.retry, p.backoffMs, p.jitter, p.jitterFactor, sagaName, stepId)
+                .doOnNext(obj -> ctx.putCompensationResult(stepId, obj))
                 .thenReturn(true)
                 .doOnSuccess(v -> { ctx.setStatus(stepId, StepStatus.COMPENSATED); events.onCompensated(sagaName, ctx.correlationId(), stepId, null); })
-                .onErrorResume(err -> { events.onCompensated(sagaName, ctx.correlationId(), stepId, err); return Mono.just(false); });
+                .onErrorResume(err -> { ctx.putCompensationError(stepId, err); events.onCompensated(sagaName, ctx.correlationId(), stepId, err); return Mono.just(false); });
     }
 
     private Mono<Object> attemptCompensateHandler(StepDefinition sd, Object input, SagaContext ctx,

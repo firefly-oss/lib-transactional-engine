@@ -14,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * - Correlation id (UUID by default) and outbound headers to propagate (e.g., user id).
  * - A general-purpose variables store for cross-step data exchange.
  * - Step results, statuses, attempts, latencies, and per-step start timestamps.
+ * - Compensation results and errors for post-mortem/observability reporting.
  * - A set of idempotency keys used to skip steps within the same run when configured.
  * - The sagaName corresponding to the {@code @Saga(name=...)} being executed.
  *
@@ -30,6 +31,8 @@ public class SagaContext {
     private final Map<String, Integer> stepAttempts = new ConcurrentHashMap<>();
     private final Map<String, Long> stepLatenciesMs = new ConcurrentHashMap<>();
     private final Map<String, Instant> stepStartedAt = new ConcurrentHashMap<>();
+    private final Map<String, Object> compensationResults = new ConcurrentHashMap<>();
+    private final Map<String, Throwable> compensationErrors = new ConcurrentHashMap<>();
     private final Set<String> idempotencyKeys = ConcurrentHashMap.newKeySet();
     private final Instant startedAt = Instant.now();
 
@@ -173,5 +176,34 @@ public class SagaContext {
 
     public Map<String, Instant> stepStartedAtView() {
         return Collections.unmodifiableMap(stepStartedAt);
+    }
+
+    // Compensation bookkeeping
+    public void putCompensationResult(String stepId, Object value) {
+        if (value != null) {
+            compensationResults.put(stepId, value);
+        }
+    }
+
+    public Object getCompensationResult(String stepId) {
+        return compensationResults.get(stepId);
+    }
+
+    public void putCompensationError(String stepId, Throwable error) {
+        if (error != null) {
+            compensationErrors.put(stepId, error);
+        }
+    }
+
+    public Throwable getCompensationError(String stepId) {
+        return compensationErrors.get(stepId);
+    }
+
+    public Map<String, Object> compensationResultsView() {
+        return Collections.unmodifiableMap(compensationResults);
+    }
+
+    public Map<String, Throwable> compensationErrorsView() {
+        return Collections.unmodifiableMap(compensationErrors);
     }
 }
