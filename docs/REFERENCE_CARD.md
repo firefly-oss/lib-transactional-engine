@@ -135,7 +135,7 @@ public class PaymentOrchestrator {
 ```
 
 ## Programmatic saga building
-For programmatic workflows (no annotations), see the Programmatic Quick Guide: [PROGRAMATIC_QUICK_GUIDE.md](PROGRAMATIC_QUICK_GUIDE.md).
+For programmatic workflows (no annotations), see the Programmatic Quick Guide: [PROGRAMMATIC_QUICK_GUIDE.md](PROGRAMMATIC_QUICK_GUIDE.md).
 It covers SagaBuilder, handlers/compensations, dynamic graphs (fan-out/conditional), execution, resilience, and common patterns.
 
 ## Execution
