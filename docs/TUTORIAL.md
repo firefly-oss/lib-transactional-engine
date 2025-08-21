@@ -1,50 +1,75 @@
-# Transactional Engine Deep‑Dive Tutorial — Orchestrating a Travel Booking Saga
+# Transactional Engine — Step‑by‑Step Tutorial (Real‑World Example)
 
-This tutorial is a hands-on, step-by-step deep dive into the Firefly Transactional Engine using a scenario that is completely different from the README's example. We will orchestrate a Travel Booking Saga coordinating multiple services: Flights, Hotels, Car Rentals, Payments, and Notifications. You'll see how to model a DAG of steps, run them with concurrency, deal with failure and compensation, propagate headers over HTTP, and reason about idempotency, retries, and timeouts.
+Welcome! This tutorial will guide you through a real‑world implementation of the Transactional Engine (Saga Orchestrator) in a Spring Boot 3 project. We will build an Order workflow that coordinates multiple services: Payments, Inventory, and Shipping. You will learn by baby steps, with diagrams, code, and best practices.
 
-**🚀 This tutorial focuses on the modern API features:**
-- **Typed StepInputs DSL** with lazy resolvers
-- **SagaResult API** for comprehensive execution results
-- **Parameter injection** using `@FromStep`, `@Header`, `@Headers`, `@Input`, `@Variable`, `@Variables` annotations
-- **Duration-based configuration** for better readability
-- **Programmatic saga building** with `SagaBuilder`
+If you’re already familiar with the library, you can jump to the sections you need. Otherwise, follow the sequence — each step builds on the previous one.
 
-> **Note**: This tutorial uses the modern `execute()` API. The older `run()` API is deprecated but still functional. See the migration notes throughout for upgrading existing code.
+Contents
+- What we’re building (overview and diagrams)
+- Project setup (dependencies)
+- Bootstrapping the engine
+- Modeling the Order Saga
+- Declaring steps and compensations
+- Passing data across steps (parameter injection)
+- Calling external services (HttpCall + WebClient)
+- Executing the saga programmatically
+- Resilience: retry, backoff, timeout, idempotency
+- Compensation policies
+- Observability and logging
+- Production checklist and best practices
 
-If you're looking for the full reference, see README.md. Here we go deeper into the why and how with a realistic end-to-end flow.
+---
 
-## Table of Contents
-- [0) Prerequisites](#0-prerequisites)
-- [1) Enable the engine in your Spring Boot app](#1-enable-the-engine-in-your-spring-boot-app)
-- [2) Problem definition — Travel booking, end to end](#2-problem-definition--travel-booking-end-to-end)
-- [3) Define request/response models (inputs/outputs)](#3-define-requestresponse-models-inputsoutputs)
-- [4) Visualize the DAG](#4-visualize-the-dag)
-- [5) Orchestrator implementation (@Saga + @SagaStep)](#5-orchestrator-implementation-saga--sagastep)
-- [6) Executing the saga](#6-executing-the-saga)
-- [7) Failure walkthrough (deep dive)](#7-failure-walkthrough-deep-dive)
-- [8) Retries, backoff, and timeouts — choosing values](#8-retries-backoff-and-timeouts--choosing-values)
-- [9) Idempotency (per run) and when to use it](#9-idempotency-per-run-and-when-to-use-it)
-- [10) Argument resolution for compensations (nuance)](#10-argument-resolution-for-compensations-nuance)
-- [11) Observability — what to look for](#11-observability--what-to-look-for)
-- [12) Testing the Travel Booking Saga](#12-testing-the-travel-booking-saga)
-- [13) Programmatic (no-annotations) variant — modern approach](#13-programmatic-no-annotations-variant--modern-approach)
-- [14) Practical guidance and edge cases](#14-practical-guidance-and-edge-cases)
-- [15) Run tests in this repo](#15-run-tests-in-this-repo)
-- [16) Summary](#16-summary)
-- [17) Parameter injection (multi-parameter)](#17-parameter-injection-multi-parameter)
-- [18) StepInputs DSL with lazy resolvers](#18-stepinputs-dsl-with-lazy-resolvers)
-- [Cancellation](#cancellation)
+## 1) What we’re building
 
+We will orchestrate a simple but realistic Order flow:
+1. Reserve funds in the Payments service
+2. Reserve items in the Inventory service
+3. Create the Order in the Orders service
+4. Notify the customer via the Notifications service
 
-## 0) Prerequisites
-- Java 21+
-- Spring Boot 3.x
-- Reactor (Mono) — included with Spring WebFlux
-- A build tool (Maven or Gradle)
+If any step fails, previously completed steps are compensated in reverse order (e.g., release funds and release inventory).
 
-Install the dependency:
+High‑level flow (with failure path):
 
-Maven
+```mermaid
+flowchart LR
+  A[Start Saga] --> P[Reserve funds]
+  P --> I[Reserve inventory]
+  I --> O[Create order]
+  O --> N[Notify customer]
+  O -- fails --> E[Error]
+  E --> CI[Compensate: Release inventory]
+  CI --> CP[Compensate: Release funds]
+  CP --> X[End Saga - failed]
+```
+
+Sequence view when all goes well:
+
+```mermaid
+sequenceDiagram
+  participant S as Orchestrator (Saga)
+  participant Pay as Payments API
+  participant Inv as Inventory API
+  participant Ord as Orders API
+  participant Notif as Notifications API
+
+  S->>Pay: POST /payments/reservations
+  Pay-->>S: 200 OK (reservationId)
+  S->>Inv: POST /inventory/reservations
+  Inv-->>S: 200 OK (reservationId)
+  S->>Ord: POST /orders
+  Ord-->>S: 201 Created (orderId)
+  S->>Notif: POST /notifications
+  Notif-->>S: 202 Accepted
+```
+
+---
+
+## 2) Project setup (dependencies)
+
+Maven (example coordinates — adjust version/group to your publishing setup):
+
 ```xml
 <dependency>
   <groupId>com.catalis</groupId>
@@ -53,734 +78,487 @@ Maven
 </dependency>
 ```
 
-Gradle (Kotlin DSL)
+Gradle (Kotlin DSL):
+
 ```kotlin
 dependencies {
   implementation("com.catalis:lib-transactional-engine:1.0.0-SNAPSHOT")
 }
 ```
 
+This tutorial uses Spring WebFlux’s WebClient for HTTP calls.
 
-## 1) Enable the engine in your Spring Boot app
-Add the `@EnableTransactionalEngine` annotation to a configuration class (commonly your main `@SpringBootApplication`).
+---
+
+## 3) Bootstrapping the engine
+
+Enable the engine with one annotation. This registers the SagaRegistry, SagaEngine, default SagaEvents, and an optional StepLoggingAspect.
 
 ```java
 import com.catalis.transactionalengine.annotations.EnableTransactionalEngine;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Configuration;
 
+@Configuration
 @EnableTransactionalEngine
-@SpringBootApplication
-public class App {
-  public static void main(String[] args) {
-    org.springframework.boot.SpringApplication.run(App.class, args);
+public class TxnEngineConfig {
+}
+```
+
+Tip: The engine is in‑memory (no persistence). It’s ideal for short‑lived orchestrations within a single process.
+
+---
+
+## 4) Modeling the Order Saga
+
+We’ll create an orchestrator class annotated with @Saga. You can control layer concurrency if you have independent steps that can run in parallel.
+
+```java
+import com.catalis.transactionalengine.annotations.Saga;
+
+@Saga(name = "OrderSaga", layerConcurrency = 0) // 0 = unbounded per layer
+public class OrderSagaOrchestrator {
+  // Step methods will be added in the next section
+}
+```
+
+Step IDs must be unique across the saga. Dependencies define a DAG (no cycles).
+
+---
+
+## 5) Declaring steps and compensations
+
+Each step is a method annotated with @SagaStep. Compensation can be declared in‑class via the `compensate` attribute or externally with @CompensationSagaStep.
+
+```java
+import com.catalis.transactionalengine.annotations.SagaStep;
+import com.catalis.transactionalengine.core.SagaContext;
+import reactor.core.publisher.Mono;
+
+public class OrderSagaOrchestrator {
+
+  // 5.1 Reserve funds (with compensation)
+  @SagaStep(id = "reserveFunds", compensate = "releaseFunds", retry = 2, backoffMs = 200, timeoutMs = 3_000)
+  public Mono<String> reserveFunds(ReserveFundsCmd cmd, SagaContext ctx) {
+    // Implemented in section 7 with HttpCall
+    return Mono.just("funds-reservation-123");
+  }
+
+  public Mono<Void> releaseFunds(ReserveFundsCmd cmd, SagaContext ctx) {
+    // Implemented in section 7
+    return Mono.empty();
+  }
+
+  // 5.2 Reserve inventory (depends on funds)
+  @SagaStep(id = "reserveInventory", compensate = "releaseInventory", dependsOn = {"reserveFunds"}, retry = 2)
+  public Mono<String> reserveInventory(ReserveInventoryCmd cmd, SagaContext ctx) {
+    return Mono.just("inventory-reservation-456");
+  }
+
+  public Mono<Void> releaseInventory(ReserveInventoryCmd cmd, SagaContext ctx) {
+    return Mono.empty();
+  }
+
+  // 5.3 Create order (depends on previous two)
+  @SagaStep(id = "createOrder", compensate = "cancelOrder", dependsOn = {"reserveFunds", "reserveInventory"}, timeoutMs = 2_000)
+  public Mono<Long> createOrder(CreateOrderCmd cmd, SagaContext ctx) {
+    return Mono.just(42L);
+  }
+
+  public Mono<Void> cancelOrder(CreateOrderCmd cmd, SagaContext ctx) {
+    return Mono.empty();
+  }
+
+  // 5.4 Notify (depends on order)
+  @SagaStep(id = "notifyCustomer", compensate = "", dependsOn = {"createOrder"})
+  public Mono<Void> notifyCustomer(NotifyCmd cmd, SagaContext ctx) {
+    return Mono.empty();
   }
 }
 ```
 
-What this does:
-- Registers SagaEngine, SagaRegistry, and default observability (`SagaEvents`).
-- Scans for your `@Saga` classes and their `@SagaStep` methods at startup.
-
-
-## 2) Problem definition — Travel booking, end to end
-We need to orchestrate a customer’s trip:
-- Reserve a flight
-- Reserve a hotel
-- Optionally reserve a car
-- Finally capture payment and issue an itinerary
-
-Key points for this scenario:
-- Flight, Hotel, and Car reservations can be attempted concurrently after we create an internal booking record.
-- Payment capture should only happen after all reservations confirm.
-- If any reservation fails (or payment fails), we must undo previously completed reservations (cancel flight/hotel/car) and mark the booking as failed.
-- We must propagate a correlation id and custom headers across all HTTP calls for traceability.
-
-We will model this with a DAG, set per-step retries and timeouts, and specify compensations for each reversible step.
-
-
-## 3) Define request/response models (inputs/outputs)
-Create simple records/POJOs for the inputs to our steps. Keep them minimal for clarity.
-
-```java
-public record InitBookingCmd(String customerId, String tripId) {}
-public record FlightReq(String from, String to, String date, int passengers) {}
-public record HotelReq(String city, String checkIn, String checkOut, int rooms) {}
-public record CarReq(String city, String pickupDate, String dropoffDate, String category) {}
-public record PaymentReq(String customerId, long totalCents, String currency) {}
-
-public record FlightRes(String reservationId) {}
-public record HotelRes(String reservationId) {}
-public record CarRes(String reservationId) {}
-public record Itinerary(String bookingId, String pdfUrl) {}
-```
-
 Notes:
-- Outputs are returned by step methods and automatically stored in `SagaContext` under the step id.
-- Compensation methods may receive either the original input or the result (whichever is type-compatible), plus `SagaContext` if declared.
+- Return type can be `Mono<T>` (preferred) or a plain `T` (wrapped automatically).
+- `retry`, `backoffMs`, `timeoutMs` are convenient annotation attributes. For complex configs, prefer the programmatic builder (see Reference Card) or inject them via external config.
+- `idempotencyKey` can be used to skip a step within the same run.
 
-
-## 4) Visualize the DAG
-We’ll create a root step `initBooking` that allocates a bookingId in our system. Once we have that, we can attempt the three reservations in parallel. After all succeed, we `capturePayment`. Finally, we `issueItinerary` and send a `notifyCustomer` message.
-
-```mermaid
-flowchart LR
-  A[initBooking] --> B[reserveFlight]
-  A --> C[reserveHotel]
-  A --> D[reserveCar]
-  B --> E[capturePayment]
-  C --> E
-  D --> E
-  E --> F[issueItinerary]
-  F --> G[notifyCustomer]
-```
-
-Compensation plan (reverse of what succeeded):
-- cancelCar, cancelHotel, cancelFlight (best-effort) if payment fails or later steps fail
-- markBookingFailed if we had created a booking
-- revokeItinerary/notifyFailure for post-payment steps
-
-
-## 5) Orchestrator implementation (@Saga + @SagaStep)
-We’ll wire WebClient instances to call downstreams. We use `HttpCall.propagate` to ensure `X-Transactional-Id` and custom headers travel with every request.
+External step example (@ExternalSagaStep) — place steps in any Spring bean and link them to the saga by name:
 
 ```java
-import com.catalis.transactionalengine.annotations.Saga;
-import com.catalis.transactionalengine.annotations.SagaStep;
+import com.catalis.transactionalengine.annotations.ExternalSagaStep;
 import com.catalis.transactionalengine.core.SagaContext;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
+
+@Component
+public class ExternalOrderSteps {
+  @ExternalSagaStep(saga = "OrderSaga", id = "auditLog")
+  public Mono<Void> auditLog(SagaContext ctx) {
+    // Persist an audit entry; runs when configured in DAG
+    return Mono.empty();
+  }
+}
+```
+
+---
+
+## 6) Passing data across steps (parameter injection)
+
+Avoid manual context plumbing. Use annotations to inject inputs, previous results, headers, or variables directly into method parameters.
+
+Supported annotations and types:
+- `@Input` or `@Input("key")` — current step input (from StepInputs)
+- `@FromStep("stepId")` — result of another step
+- `@Header("X-Name")` / `@Headers Map<String,String>` — outbound headers
+- `@Variable("k")` / `@Variables Map<String,Object>` — variables map
+- `SagaContext` — injected by type
+- `@SetVariable("k")` — store the method return value into context variables
+
+Note on compensation parameter mapping:
+- If a compensation method’s first parameter type matches the original step input, the engine passes the input.
+- Otherwise, if it matches the step result, the engine passes the result.
+- Otherwise, the business argument is null. Add `SagaContext` as needed and you may also use `@Input`, `@FromStep`, `@Header/@Headers`, and `@Variable/@Variables` on compensations.
+
+Example mixing injection:
+
+```java
+import com.catalis.transactionalengine.annotations.*;
+
+@Saga(name = "OrderSaga")
+public class OrderSagaOrchestrator {
+  @SagaStep(id = "createOrder", compensate = "cancelOrder", dependsOn = {"reserveFunds", "reserveInventory"})
+  @SetVariable("orderId")
+  public Mono<Long> createOrder(
+      @Input CreateOrderCmd cmd,
+      @FromStep("reserveFunds") String fundsReservationId,
+      @FromStep("reserveInventory") String inventoryReservationId,
+      SagaContext ctx
+  ) {
+    // Build request using inputs and prior results; store orderId via @SetVariable
+    return Mono.just(101L);
+  }
+}
+```
+
+---
+
+### 6.1) Passing data to compensations
+
+Compensations receive data automatically based on parameter types. The engine chooses which business argument to pass using this order:
+- If the first parameter type matches the original step input, it passes the input.
+- Otherwise, if it matches the step result, it passes the result.
+- Otherwise, the business argument is null. You can always declare `SagaContext` and it will be injected by type.
+
+You can also use parameter annotations on compensation methods for explicit injection: `@Input`, `@FromStep`, `@Header/@Headers`, `@Variable/@Variables`.
+
+Examples
+
+1) Compensation receives step result
+```java
+@SagaStep(id = "a", compensate = "undoA")
+Mono<String> a(SagaContext ctx) { return Mono.just("A"); }
+
+// First parameter type (String) matches step result → engine passes result
+Mono<Void> undoA(String result, SagaContext ctx) { return Mono.empty(); }
+```
+
+2) Compensation receives original input
+```java
+record PaymentReq(String customerId, long amountCents) {}
+
+@SagaStep(id = "pay", compensate = "undoPay")
+Mono<Receipt> pay(@Input PaymentReq req, SagaContext ctx) { /* call downstream */ }
+
+// First parameter type matches step input → engine passes input
+Mono<Void> undoPay(PaymentReq req, SagaContext ctx) { /* refund */ }
+```
+
+3) Context-only compensation
+```java
+@SagaStep(id = "x", compensate = "undoX")
+Mono<Void> x(SagaContext ctx) { return Mono.empty(); }
+
+// No business argument; only context
+Mono<Void> undoX(SagaContext ctx) { return Mono.empty(); }
+```
+
+4) External compensation mapping
+```java
+@Component
+class ExternalComps {
+  @CompensationSagaStep(saga = "OrderSaga", forStepId = "createOrder")
+  Mono<Void> cancelOrderExternal(@FromStep("createOrder") Long orderId, SagaContext ctx) {
+    // or declare (CreateOrderCmd cmd, SagaContext ctx) if you prefer the original input
+    return Mono.empty();
+  }
+}
+```
+
+Tip: If the first compensation parameter does not match input or result, it will be null. In that case, use explicit annotations or adjust the type.
+
+---
+
+## 7) Calling external services (HttpCall + WebClient)
+
+Use `HttpCall` to propagate the saga correlation id (`X-Transactional-Id`) and any custom headers. You can also map error bodies to exceptions to fail steps cleanly.
+
+DTOs and exception:
+
+```java
+record ReserveFundsCmd(String customerId, long amountCents) {}
+record ReserveInventoryCmd(String sku, int quantity) {}
+record CreateOrderCmd(String customerId, String sku, int quantity, long amountCents) {}
+record NotifyCmd(String customerId, long orderId) {}
+
+record PaymentReservationResponse(String reservationId) {}
+record PaymentError(String code, String message) {}
+
+class PaymentDownstreamException extends RuntimeException {
+  final int status;
+  final String code;
+  PaymentDownstreamException(int status, String code, String msg) {
+    super("Payments error [" + status + "] " + code + ": " + msg);
+    this.status = status; this.code = code;
+  }
+}
+```
+
+Configure WebClient and implement steps:
+
+```java
 import com.catalis.transactionalengine.http.HttpCall;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
-import java.util.Map;
-
-@Saga(name = "TravelBookingSaga")
 @Service
-public class TravelBookingOrchestrator {
-  private final WebClient flights;
-  private final WebClient hotels;
-  private final WebClient cars;
-  private final WebClient payments;
-  private final WebClient docs;
-  private final WebClient notify;
-
-  public TravelBookingOrchestrator(WebClient.Builder builder) {
-    this.flights  = builder.baseUrl("http://flights/api").build();
-    this.hotels   = builder.baseUrl("http://hotels/api").build();
-    this.cars     = builder.baseUrl("http://cars/api").build();
-    this.payments = builder.baseUrl("http://payments/api").build();
-    this.docs     = builder.baseUrl("http://docs/api").build();
-    this.notify   = builder.baseUrl("http://notify/api").build();
+public class PaymentGateway {
+  private final WebClient client;
+  public PaymentGateway(@Value("${payments.base-url}") String baseUrl, WebClient.Builder builder) {
+    this.client = builder.baseUrl(baseUrl).build();
   }
 
-  // 1) Initialize booking (idempotent, fast) - using modern ISO-8601 duration
-  @SagaStep(id = "initBooking", compensate = "markBookingFailed", timeout = "PT2S")
-  public Mono<String> initBooking(InitBookingCmd cmd, SagaContext ctx) {
-    return HttpCall.propagate(
-        docs.post().uri("/bookings").bodyValue(Map.of(
-            "customerId", cmd.customerId(),
-            "tripId", cmd.tripId()
-        )), ctx
-    ).retrieve().bodyToMono(String.class) // returns bookingId
-     .doOnNext(bid -> ctx.putHeader("X-Booking-Id", bid)); // propagate booking id downstream
+  Mono<String> reserve(ReserveFundsCmd cmd, SagaContext ctx) {
+    return HttpCall.exchangeOrError(
+        HttpCall.propagate(
+          client.post().uri("/payments/reservations").bodyValue(cmd),
+          ctx
+        ),
+        ctx,
+        PaymentReservationResponse.class, PaymentError.class,
+        (status, err) -> new PaymentDownstreamException(status, err != null ? err.code() : "unknown", err != null ? err.message() : "")
+    ).map(PaymentReservationResponse::reservationId);
   }
 
-  public Mono<Void> markBookingFailed(String bookingId, SagaContext ctx) {
-    return HttpCall.propagate(
-        docs.post().uri("/bookings/{id}/fail", bookingId), ctx
-    ).retrieve().bodyToMono(Void.class);
-  }
-
-  // 2) Reserve flight (retriable with jitter)
-  @SagaStep(id = "reserveFlight", compensate = "cancelFlight", dependsOn = {"initBooking"},
-            retry = 2, backoff = "PT300MS", timeout = "PT5S", jitter = true)
-  public Mono<FlightRes> reserveFlight(FlightReq req, SagaContext ctx) {
-    return HttpCall.propagate(
-        flights.post().uri("/reservations").bodyValue(req), ctx
-    ).retrieve().bodyToMono(FlightRes.class);
-  }
-
-  public Mono<Void> cancelFlight(FlightRes res, SagaContext ctx) {
-    return HttpCall.propagate(
-        flights.post().uri("/reservations/{id}/cancel", res.reservationId()), ctx
-    ).retrieve().bodyToMono(Void.class);
-  }
-
-  // 3) Reserve hotel (parallel to flight with jitter)
-  @SagaStep(id = "reserveHotel", compensate = "cancelHotel", dependsOn = {"initBooking"},
-            retry = 2, backoff = "PT300MS", timeout = "PT5S", jitter = true, jitterFactor = 0.3)
-  public Mono<HotelRes> reserveHotel(HotelReq req, SagaContext ctx) {
-    return HttpCall.propagate(
-        hotels.post().uri("/reservations").bodyValue(req), ctx
-    ).retrieve().bodyToMono(HotelRes.class);
-  }
-
-  public Mono<Void> cancelHotel(HotelRes res, SagaContext ctx) {
-    return HttpCall.propagate(
-        hotels.post().uri("/reservations/{id}/cancel", res.reservationId()), ctx
-    ).retrieve().bodyToMono(Void.class);
-  }
-
-  // 4) Reserve car (optional, CPU-bound pricing calculation)
-  @SagaStep(id = "reserveCar", compensate = "cancelCar", dependsOn = {"initBooking"},
-            idempotencyKey = "car:standard", timeout = "PT4S", cpuBound = true)
-  public Mono<CarRes> reserveCar(CarReq req, SagaContext ctx) {
-    return HttpCall.propagate(
-        cars.post().uri("/reservations").bodyValue(req), ctx
-    ).retrieve().bodyToMono(CarRes.class);
-  }
-
-  public Mono<Void> cancelCar(CarRes res, SagaContext ctx) {
-    return HttpCall.propagate(
-        cars.post().uri("/reservations/{id}/cancel", res.reservationId()), ctx
-    ).retrieve().bodyToMono(Void.class);
-  }
-
-  // 5) Capture payment after ALL reservations are confirmed
-  @SagaStep(id = "capturePayment", compensate = "refundPayment",
-            dependsOn = {"reserveFlight", "reserveHotel", "reserveCar"}, timeout = "PT6S")
-  public Mono<String> capturePayment(PaymentReq req, SagaContext ctx) {
-    return HttpCall.propagate(
-        payments.post().uri("/charges").bodyValue(req), ctx
-    ).retrieve().bodyToMono(String.class); // chargeId
-  }
-
-  public Mono<Void> refundPayment(String chargeId, SagaContext ctx) {
-    return HttpCall.propagate(
-        payments.post().uri("/charges/{id}/refund", chargeId), ctx
-    ).retrieve().bodyToMono(Void.class);
-  }
-
-  // 6) Issue itinerary using parameter injection (modern approach)
-  @SagaStep(id = "issueItinerary", compensate = "revokeItinerary", dependsOn = {"capturePayment"}, timeout = "PT3S")
-  public Mono<Itinerary> issueItinerary(
-      @FromStep("initBooking") String bookingId,
-      @FromStep("capturePayment") String chargeId,
-      @Header("X-User-Id") String userId,
-      SagaContext ctx) {
-    return HttpCall.propagate(
-        docs.post().uri("/itineraries").bodyValue(Map.of(
-            "bookingId", bookingId,
-            "chargeId", chargeId,
-            "userId", userId
-        )), ctx
-    ).retrieve().bodyToMono(Itinerary.class);
-  }
-
-  // Alternative: Traditional approach (still supported)
-  // public Mono<Itinerary> issueItinerary(SagaContext ctx) {
-  //   String bookingId = (String) ctx.getResult("initBooking");
-  //   String chargeId = (String) ctx.getResult("capturePayment");
-  //   String userId = ctx.headers().get("X-User-Id");
-  //   return HttpCall.propagate(
-  //       docs.post().uri("/itineraries").bodyValue(Map.of(
-  //           "bookingId", bookingId,
-  //           "chargeId", chargeId,
-  //           "userId", userId
-  //       )), ctx
-  //   ).retrieve().bodyToMono(Itinerary.class);
-  // }
-
-  public Mono<Void> revokeItinerary(Itinerary it, SagaContext ctx) {
-    return HttpCall.propagate(
-        docs.post().uri("/itineraries/revoke").bodyValue(Map.of("bookingId", it.bookingId())), ctx
-    ).retrieve().bodyToMono(Void.class);
-  }
-
-  // 7) Notify customer; if it fails we log but do not attempt to undo previous business effects
-  @SagaStep(id = "notifyCustomer", compensate = "notifyFailure", dependsOn = {"issueItinerary"})
-  public Mono<Void> notifyCustomer(SagaContext ctx) {
-    String bookingId = (String) ctx.getResult("initBooking");
-    return HttpCall.propagate(
-        notify.post().uri("/email").bodyValue(Map.of(
-            "template", "itinerary",
-            "bookingId", bookingId
-        )), ctx
-    ).retrieve().bodyToMono(Void.class);
-  }
-
-  public Mono<Void> notifyFailure(SagaContext ctx) {
-    String bookingId = (String) ctx.getResult("initBooking");
-    return HttpCall.propagate(
-        notify.post().uri("/email").bodyValue(Map.of(
-            "template", "failure",
-            "bookingId", bookingId
-        )), ctx
-    ).retrieve().bodyToMono(Void.class);
+  Mono<Void> release(ReserveFundsCmd cmd, SagaContext ctx) {
+    return HttpCall.exchangeVoidOrError(
+        HttpCall.propagate(
+          client.post().uri("/payments/reservations/release").bodyValue(cmd),
+          ctx
+        ),
+        ctx,
+        PaymentError.class,
+        (status, err) -> new PaymentDownstreamException(status, err != null ? err.code() : "unknown", err != null ? err.message() : "")
+    );
   }
 }
 ```
 
-Why compensations like notifyFailure exist: the engine requires a compensation method per step. For steps that are logically non-reversible (e.g., sending an email), use a compensating action that records/alerts the failure (a “noop” is fine if you prefer). For read-only steps, you can also use a noop compensation.
+Apply the same pattern to Inventory/Orders/Notifications services. The `HttpCall.propagate(...)` helper injects:
+- `X-Transactional-Id` header with `ctx.correlationId()`
+- all headers from `ctx.headers()`
 
+Alternative: build `HttpHeaders` for non‑WebClient clients with `HttpCall.buildHeaders(ctx)`.
 
-## 6) Executing the saga
-Use `SagaEngine` to execute by name with typed `StepInputs` and receive a typed `SagaResult`. Supply inputs for each step that expects an input. Steps that only need `SagaContext` can omit inputs.
+---
+
+## 8) Executing the saga programmatically
+
+Use `SagaEngine.execute(...)` with typed `StepInputs`. Always pass a `SagaContext` to carry correlation and headers.
 
 ```java
+import com.catalis.transactionalengine.engine.StepInputs;
 import com.catalis.transactionalengine.core.SagaContext;
+import com.catalis.transactionalengine.engine.SagaEngine;
 import com.catalis.transactionalengine.core.SagaResult;
-import com.catalis.transactionalengine.engine.SagaEngine;
-import com.catalis.transactionalengine.engine.StepInputs;
-import org.springframework.stereotype.Service;
-import reactor.core.publisher.Mono;
 
-import java.time.Duration;
-import java.util.List;
-
-@Service
-public class TravelService {
-  private final SagaEngine engine;
-
-  public TravelService(SagaEngine engine) { this.engine = engine; }
-
-  public Mono<BookingResult> bookTrip(String customerId, String tripId) {
-    SagaContext ctx = new SagaContext();
-    ctx.putHeader("X-User-Id", customerId);
-    ctx.putHeader("X-Tenant", "eu-west");
-    ctx.putHeader("X-Request-Source", "web-ui");
-
-    StepInputs inputs = StepInputs.builder()
-        .forStepId("initBooking", new InitBookingCmd(customerId, tripId))
-        .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
-        .forStepId("reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1))
-        .forStepId("reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"))
-        .forStepId("capturePayment", new PaymentReq(customerId, 2_450_00, "USD"))
-        .build();
-
-    return engine
-        .execute("TravelBookingSaga", inputs, ctx)
-        .map(this::processResult);
-  }
-  // Tip: If you don't need to preset headers/correlationId, you can omit the SagaContext:
-  // return engine.execute("TravelBookingSaga", inputs).map(this::processResult);
-
-  private BookingResult processResult(SagaResult result) {
-    if (result.isSuccess()) {
-      // Extract typed results from successful execution
-      String bookingId = result.resultOf("initBooking", String.class).orElse("unknown");
-      Itinerary itinerary = result.resultOf("issueItinerary", Itinerary.class).orElse(null);
-      Duration totalDuration = result.duration();
-      
-      return new BookingResult(
-          true, 
-          bookingId, 
-          itinerary, 
-          null, 
-          totalDuration,
-          result.steps().size()
-      );
-    } else {
-      // Handle failure with detailed error information
-      String failedStep = result.firstErrorStepId().orElse("unknown");
-      List<String> compensatedSteps = result.compensatedSteps();
-      Throwable error = result.error().orElse(null);
-      
-      return new BookingResult(
-          false, 
-          null, 
-          null, 
-          new BookingError(failedStep, error, compensatedSteps),
-          result.duration(),
-          result.steps().size()
-      );
-    }
-  }
-
-  public record BookingResult(
-      boolean success,
-      String bookingId,
-      Itinerary itinerary,
-      BookingError error,
-      Duration executionTime,
-      int totalSteps
-  ) {}
-
-  public record BookingError(
-      String failedStep,
-      Throwable cause,
-      List<String> compensatedSteps
-  ) {}
-}
-```
-
-What runs when:
-- `initBooking` runs first. Its result (bookingId) is stored in context.
-- `reserveFlight`, `reserveHotel`, and `reserveCar` run concurrently (same DAG layer) after `initBooking`.
-- `capturePayment` waits for all three reservations to complete.
-- `issueItinerary` waits for payment; then `notifyCustomer` runs.
-
-
-## 7) Failure walkthrough (deep dive)
-Consider a failure in `reserveHotel` after `reserveFlight` succeeded, `reserveCar` succeeded, and before `capturePayment` runs.
-- The engine stops scheduling further steps and begins compensation for completed steps.
-- Compensation order is the reverse completion order (not reverse declaration order). If `reserveCar` finished last, it will be compensated first: `cancelCar`, then `cancelFlight`, and finally `markBookingFailed` for `initBooking` if nothing else succeeded.
-- `SagaContext` statuses you should expect:
-  - `reserveHotel = FAILED`
-  - `reserveFlight = COMPENSATED`
-  - `reserveCar = COMPENSATED`
-  - `initBooking = COMPENSATED` (after `markBookingFailed`)
-- The saga completes with success=false, and observability hooks (`SagaEvents`) are fired accordingly.
-
-If failure happens after payment capture, the compensation will include `refundPayment` and then reservation cancellations as needed, followed by `markBookingFailed`. If `issueItinerary` fails, we’ll call `revokeItinerary` and optionally trigger `notifyFailure`.
-
-
-## 8) Retries, backoff, and timeouts — choosing values
-- Network steps (`reserveFlight`, `reserveHotel`) often benefit from small retries (1–3) with a short fixed backoff (100–500 ms). Avoid large retry counts that prolong user wait times.
-- Use `timeoutMs` per step to bound user-perceived latency and avoid hanging requests; keep them aligned with downstream SLAs.
-- Beware of double retries: if your HTTP client retries and the engine also retries, you may multiply attempts unintentionally.
-
-Example configuration we used:
-```java
-@SagaStep(id = "reserveHotel", compensate = "cancelHotel", dependsOn = {"initBooking"},
-          retry = 2, backoffMs = 300, timeoutMs = 5000)
-```
-
-
-## 9) Idempotency (per run) and when to use it
-- `idempotencyKey` skips a step if the same key was used earlier in the SAME saga run.
-- This is useful for optional or re-entrant steps that may get scheduled again within the run due to retries/timeouts or graph structure.
-- Cross-run idempotency (between different saga runs or days) is not handled by the engine; design your downstream APIs to be idempotent using natural keys.
-
-Example:
-```java
-@SagaStep(id = "reserveCar", compensate = "cancelCar", dependsOn = {"initBooking"},
-          idempotencyKey = "car:standard")
-```
-
-
-## 10) Argument resolution for compensations (nuance)
-When a compensation method expects a business argument, the engine resolves it in this order:
-1) The original step input if assignable to the parameter type
-2) Else, the step result if assignable
-3) Else, null
-Additionally, `SagaContext` is injected if declared. This is why we can write `cancelHotel(HotelRes res, SagaContext ctx)` — the engine passes the step result.
-
-
-## 11) Observability — what to look for
-Out-of-the-box, the engine emits lifecycle events via `SagaEvents`. The default `SagaLoggerEvents` prints structured key=value logs like:
-```
-saga_event=start saga=TravelBookingSaga sagaId=...
-saga_event=step_success saga=TravelBookingSaga stepId=reserveFlight attempts=1 latencyMs=123
-saga_event=step_failed saga=TravelBookingSaga stepId=reserveHotel attempts=3 latencyMs=5000 error=...
-saga_event=completed saga=TravelBookingSaga success=false
-```
-In addition to onStart(saga,id) and step success/failure events, the engine also publishes:
-- onStart(saga,id, ctx): with access to SagaContext for header propagation and tracing; the default tracing sink injects X-Trace-Id.
-- onStepStarted(saga,id,step): when a step transitions to RUNNING (useful for queue depth/concurrency metrics).
-- onStepSkippedIdempotent(saga,id,step): when a step is skipped due to per-run idempotency.
-
-Auto-configuration and composition:
-- If you don’t declare your own `SagaEvents` bean, a composite is created including the logger sink and, if available, `SagaMicrometerEvents` and `SagaTracingEvents` (wired when a `MeterRegistry` or `Tracer` bean is present).
-- Micrometer metrics include counters/timers like `saga.step.started`, `saga.step.completed{outcome=*}`, `saga.step.latency`, `saga.step.attempts`, and `saga.run.completed`.
-- Tracing creates a span for the saga and one per step, and injects `X-Trace-Id` into `SagaContext.headers()` for HTTP propagation.
-
-You can provide a custom `SagaEvents` bean to integrate with metrics/tracing. For low-level timings of raw method invocations, enable DEBUG for `StepLoggingAspect`.
-
-
-## 12) Testing the Travel Booking Saga
-Use Reactor StepVerifier to assert success/failure and inspect results in `SagaContext`.
-
-```java
-import com.catalis.transactionalengine.core.SagaContext;
-import com.catalis.transactionalengine.engine.SagaEngine;
-import org.junit.jupiter.api.Test;
-import reactor.test.StepVerifier;
-
-import java.util.Map;
-
-class TravelBookingTest {
-  @Test
-  void successfulBooking_emitsItinerary() {
-    SagaEngine engine = /* injected */ null;
-    SagaContext ctx = new SagaContext("corr-travel-1");
-
-    StepInputs inputs = StepInputs.builder()
-        .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
-        .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
-        .forStepId("reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1))
-        .forStepId("reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"))
-        .forStepId("capturePayment", new PaymentReq("cust-100", 2_450_00, "USD"))
-        .build();
-
-    StepVerifier.create(engine.execute("TravelBookingSaga", inputs, ctx))
-    .expectNextMatches(res -> res.resultOf("issueItinerary", Itinerary.class).isPresent())
-    .verifyComplete();
-  }
-}
-```
-
-Tips:
-- In tests, you can mock downstream services or stub WebClient calls.
-- Inspect `ctx.getStatus(stepId)` to assert `DONE`, `FAILED`, or `COMPENSATED`.
-
-
-## 13) Programmatic (no-annotations) variant — modern approach
-You can build the same saga dynamically with the fluent builder and functional handlers. This is useful for module-scoped flows or heavy testing. The modern API uses Duration-based configuration and typed StepInputs.
-
-```java
-import com.catalis.transactionalengine.core.SagaContext;
-import com.catalis.transactionalengine.engine.SagaEngine;
-import com.catalis.transactionalengine.engine.StepHandler;
-import com.catalis.transactionalengine.engine.StepInputs;
-import com.catalis.transactionalengine.registry.SagaBuilder;
-import com.catalis.transactionalengine.registry.SagaDefinition;
-import reactor.core.publisher.Mono;
-import java.time.Duration;
-
-// Modern approach with Duration-based configuration
-SagaDefinition travel = SagaBuilder.saga("travel")
-  .step("initBooking")
-    .timeout(Duration.ofSeconds(2))
-    .handler((StepHandler<InitBookingCmd, String>) (in, ctx) -> Mono.just("B-123"))
-    .add()
-  .step("reserveFlight")
-    .dependsOn("initBooking")
-    .retry(2)
-    .backoff(Duration.ofMillis(300))
-    .timeout(Duration.ofSeconds(5))
-    .handler((StepHandler<FlightReq, FlightRes>) (in, ctx) -> Mono.just(new FlightRes("F-1")))
-    .add()
-  .step("reserveHotel")
-    .dependsOn("initBooking")
-    .retry(2)
-    .backoff(Duration.ofMillis(300))
-    .timeout(Duration.ofSeconds(5))
-    .handler((StepHandler<HotelReq, HotelRes>) (in, ctx) -> Mono.just(new HotelRes("H-1")))
-    .add()
-  .step("reserveCar")
-    .dependsOn("initBooking")
-    .idempotencyKey("car:standard")
-    .timeout(Duration.ofSeconds(4))
-    .handler((StepHandler<CarReq, CarRes>) (in, ctx) -> Mono.just(new CarRes("C-1")))
-    .add()
-  .step("capturePayment")
-    .dependsOn("reserveFlight", "reserveHotel", "reserveCar")
-    .timeout(Duration.ofSeconds(6))
-    .handler((StepHandler<PaymentReq, String>) (in, ctx) -> Mono.just("charge-OK"))
-    .add()
-  .step("issueItinerary")
-    .dependsOn("capturePayment")
-    .timeout(Duration.ofSeconds(3))
-    .handler((StepHandler<Void, Itinerary>) (in, ctx) -> {
-      // Access previous step results from context
-      String bookingId = (String) ctx.getResult("initBooking");
-      String chargeId = (String) ctx.getResult("capturePayment");
-      return Mono.just(new Itinerary(bookingId, "http://docs/itinerary.pdf"));
-    })
-    .add()
+// Assemble inputs per step id
+StepInputs inputs = StepInputs.builder()
+  .forStepId("reserveFunds", new ReserveFundsCmd("cust-123", 500_00))
+  .forStepId("reserveInventory", new ReserveInventoryCmd("SKU-001", 2))
+  .forStepId("createOrder", new CreateOrderCmd("cust-123", "SKU-001", 2, 500_00))
+  .forStepId("notifyCustomer", new NotifyCmd("cust-123", 0)) // orderId will be known after createOrder
   .build();
 
-// Execute with modern StepInputs DSL
 SagaContext ctx = new SagaContext();
-ctx.putHeader("X-User-Id", "u-123");
+ctx.putHeader("X-User-Id", "user-789"); // will be propagated downstream
 
-StepInputs inputs = StepInputs.builder()
-  .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
-  .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
-  .forStepId("reserveHotel", new HotelReq("San Francisco", "2025-10-01", "2025-10-07", 1))
-  .forStepId("reserveCar", new CarReq("San Francisco", "2025-10-01", "2025-10-07", "standard"))
-  .forStepId("capturePayment", new PaymentReq("cust-100", 2_450_00, "USD"))
-  .build();
-
-// Execute and get typed result
-Mono<SagaResult> result = sagaEngine.execute(travel, inputs, ctx);
-SagaResult sagaResult = result.block();
-
-if (sagaResult.isSuccess()) {
-  Itinerary itinerary = sagaResult.resultOf("issueItinerary", Itinerary.class).orElse(null);
-  // Process successful booking
-} else {
-  String failedStep = sagaResult.firstErrorStepId().orElse("unknown");
-  // Handle failure
-}
+SagaResult result = engine.execute("OrderSaga", inputs, ctx).block();
+Long orderId = result.resultOf("createOrder", Long.class).orElse(null);
 ```
 
-**🔄 Migration from deprecated API:**
-```java
-// Old approach (deprecated but still works)
-// Map<String, Object> inputs = Map.of(...);
-// Mono<Map<String, Object>> result = sagaEngine.run(travel, inputs, ctx);
+Tip: `StepInputs` also supports lazy resolvers evaluated at execution time. See `StepInputs.Builder#forStepId(String, StepInputResolver)` if you want to derive inputs from headers/variables.
 
-// New approach (recommended)
-// StepInputs inputs = StepInputs.builder()...build();
-// Mono<SagaResult> result = sagaEngine.execute(travel, inputs, ctx);
+---
+
+## 9) Resilience: retry, backoff, timeout, idempotency
+
+You can configure resilience per step using annotation attributes for convenience:
+- `retry = 2`
+- `backoffMs = 200`
+- `timeoutMs = 3_000`
+- `jitter = true`, `jitterFactor = 0.5d`
+- `idempotencyKey = "customer-123:reserveFunds"` (per‑run; prevents re‑executing a step with the same key)
+
+For complex/dynamic flows, consider the programmatic builder (see Reference Card) to set `Duration`-based retry/backoff/timeout more readably.
+
+Best practices:
+- Use timeouts on all remote calls; match step timeout to remote SLAs.
+- Use fixed retry counts with modest backoff; avoid unbounded retries.
+- Surface downstream errors as domain exceptions; let the engine compensate.
+- Design compensations to be idempotent and safe to retry.
+
+Compensation-specific overrides
+- You can override compensation resilience per step using `@SagaStep` attributes: `compensationRetry`, `compensationBackoffMs`, `compensationTimeoutMs`, and `compensationCritical`.
+
+Example
+```java
+@SagaStep(id = "createOrder", compensate = "cancelOrder",
+  retry = 2, backoffMs = 200,
+  compensationRetry = 3, compensationBackoffMs = 500, compensationTimeoutMs = 2_000, compensationCritical = true)
+Mono<Long> createOrder(@Input CreateOrderCmd cmd, SagaContext ctx) { /* ... */ }
 ```
 
-**Advanced: StepInputs with lazy resolvers in programmatic sagas:**
-```java
-StepInputs dynamicInputs = StepInputs.builder()
-  .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
-  .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
-  // Lazy resolver: issueItinerary input depends on previous results
-  .forStepId("issueItinerary", ctx -> {
-    String bookingId = (String) ctx.getResult("initBooking");
-    String userId = ctx.headers().get("X-User-Id");
-    return new IssueItineraryReq(bookingId, userId);
-  })
-  .build();
-```
+---
 
+## 10) Compensation policies
 
-## 14) Practical guidance and edge cases
-- Compensation must be best-effort and idempotent. Design downstream cancel/refund APIs so calling them twice is harmless.
-- Concurrency: Steps in the same layer run concurrently. Ensure downstreams tolerate concurrent requests for the same logical customer/trip when applicable.
-- Long chains: If your graph has many layers, consider grouping some calls behind a service to reduce orchestration complexity.
-- Timeouts vs. retries: prefer smaller timeouts with a couple of retries over very large timeouts.
-- Passing data: Use results in `SagaContext` to derive inputs for later steps (we used bookingId from `initBooking`). You can also place additional metadata into context headers for cross-cutting concerns.
+The engine supports multiple compensation strategies:
+- `STRICT_SEQUENTIAL` (default): exact reverse completion order, one at a time.
+- `GROUPED_PARALLEL`: compensate by original DAG layers, running independent compensations in parallel per batch.
+- `RETRY_WITH_BACKOFF`: sequential rollback with retry/backoff/timeout applied to each compensation (inherits step settings unless overridden per compensation).
+- `CIRCUIT_BREAKER`: sequential rollback that opens a circuit (skips remaining compensations) when a compensation marked as critical fails.
+- `BEST_EFFORT_PARALLEL`: run all compensations in parallel; record errors via events without stopping others.
 
-
-## 15) Run tests in this repo
-- All tests: `mvn clean test`
-- One class: `mvn -Dtest=com.catalis.transactionalengine.engine.SagaEngineTest test`
-- One method: `mvn -Dtest=SagaEngineTest#timeoutFailsStep test`
-
-
-## 16) Summary
-We built a Travel Booking Saga that:
-- Models a DAG with concurrent reservations
-- Uses per-step retries, backoff, and timeouts
-- Propagates correlation id and custom headers over HTTP
-- Compensates in reverse completion order on failure
-- Demonstrates per-run idempotency and nuanced compensation argument resolution
-
-This example is intentionally different from the README’s payment/order flow and goes deeper into the orchestration and failure semantics you’ll apply in production.
-
-## 17) Parameter injection (multi-parameter)
-The engine can inject values into step method parameters by reading annotations from the original method signature. You can mix and match:
-- @FromStep("id"): inject the result of another step
-- @Header("name"): inject a single outbound header
-- @Headers: inject all headers as Map<String,String>
-- @Input or @Input("key"): inject the step input (or a key from a Map input)
-- @Variable("name"): inject a variable from SagaContext.variables()
-- @Variables: inject the full variables map (Map<String,Object>)
-- SagaContext: injected by type
-
-Also handy: use @SetVariable("name") on a step method to store its return value into variables under that name.
-
-Why this exists
-Parameter injection eliminates boilerplate and makes step methods explicit about their dependencies. Declare what you need; the engine injects it.
-
-Quick rules (cheat sheet):
-- You can combine multiple annotations in one method signature; order doesn’t matter.
-- Only SagaContext can be left unannotated; other parameters should be annotated.
-- You can have at most one unannotated non-SagaContext parameter; it will receive the step input (same as @Input). More than one triggers a startup error.
-- Types must match: @Header -> String, @Headers -> Map, @Variables -> Map.
-
-Example in this travel saga:
-```java
-@SagaStep(id = "prepareDocs", compensate = "noop", dependsOn = {"reserveFlight", "reserveHotel"})
-public Mono<Void> prepareDocs(
-  @FromStep("reserveFlight") FlightRes flight,
-  @FromStep("reserveHotel") HotelRes hotel,
-  @Header("X-User-Id") String user,
-  SagaContext ctx
-) {
-  // Build a consolidated document request using flight + hotel + user
-  return Mono.empty();
-}
-```
-Validation rules are applied at startup so misconfigurations fail fast (unknown step ids, wrong parameter types for @Headers, etc.).
-
-### Detailed examples (per annotation)
-Each snippet below demonstrates one annotation in isolation, using short step methods.
+Switch policy by customizing the `SagaEngine` bean:
 
 ```java
-@Saga(name = "TravelParamExamples")
-class ParamExamples {
-  // Assume callers may set headers and we sometimes store variables.
+import com.catalis.transactionalengine.engine.SagaEngine;
+import com.catalis.transactionalengine.observability.SagaEvents;
+import com.catalis.transactionalengine.registry.SagaRegistry;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
-  // @Input — whole input
-  @SagaStep(id = "initBooking", compensate = "undoInit")
-  Mono<String> initBooking(@Input InitBookingCmd cmd) {
-    return Mono.just(cmd.tripId());
+@Configuration
+class EnginePolicyConfig {
+  @Bean
+  SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events) {
+    return new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
   }
-  Mono<Void> undoInit(InitBookingCmd cmd) { return Mono.empty(); }
-
-  // @Input("key") — from Map input
-  // Inputs: StepInputs.builder().forStepId("cfg", Map.of("locale","en-US")).build();
-  @SagaStep(id = "cfg", compensate = "noop")
-  Mono<String> cfg(@Input("locale") String locale) { return Mono.just(locale); }
-  Mono<Void> noop() { return Mono.empty(); }
-
-  // @FromStep — use prior result
-  @SagaStep(id = "reserveFlight", compensate = "cancelFlight")
-  Mono<FlightRes> reserveFlight(FlightReq req) { return Mono.just(new FlightRes("FR-1")); }
-  Mono<Void> cancelFlight(FlightReq req) { return Mono.empty(); }
-
-  @SagaStep(id = "ticket", compensate = "revoke", dependsOn = {"reserveFlight"})
-  Mono<String> ticket(@FromStep("reserveFlight") FlightRes flight) { return Mono.just("T:" + flight.reservationId()); }
-  Mono<Void> revoke(String t) { return Mono.empty(); }
-
-  // @Header — single header
-  @SagaStep(id = "userTag", compensate = "noop")
-  Mono<String> userTag(@Header("X-User-Id") String user) { return Mono.just("U:" + user); }
-
-  // @Headers — all headers
-  @SagaStep(id = "audit", compensate = "noop")
-  Mono<Integer> audit(@Headers Map<String,String> headers) { return Mono.just(headers.size()); }
-
-  // @SetVariable + @Variable
-  @SagaStep(id = "country", compensate = "noop")
-  @SetVariable("country")
-  Mono<String> country() { return Mono.just("ES"); }
-
-  @SagaStep(id = "greet", compensate = "noop", dependsOn = {"country"})
-  Mono<String> greet(@Variable("country") String c) { return Mono.just("Hola-" + c); }
-
-  // @Variables — whole variables map
-  @SagaStep(id = "varsView", compensate = "noop", dependsOn = {"greet"})
-  Mono<String> varsView(@Variables Map<String,Object> vars) { return Mono.just(vars.keySet().toString()); }
-
-  // SagaContext — type-based injection
-  @SagaStep(id = "ctxUse", compensate = "noop")
-  Mono<String> ctxUse(SagaContext ctx) { return Mono.just(ctx.correlationId()); }
 }
 ```
 
-Notes:
-- Use @SetVariable when a step’s output should be reused later without wiring it as an input.
-- @FromStep requires the referenced step id to exist and its result to be type-compatible with the parameter. Otherwise you’ll get a ClassCastException at runtime.
-- @Header/@Headers read from SagaContext.headers(), which you can pre-populate before calling engine.execute(...).
+---
 
-## 18) StepInputs DSL with lazy resolvers
-Prefer StepInputs.builder() over raw Map inputs. You can provide concrete values or lazy resolvers that will be evaluated right before the step runs and then cached for compensation.
+## 11) Observability and logging
 
-Concrete values by step id:
+- `SagaContext.correlationId()` is automatically generated; propagate it using `HttpCall`.
+- The engine emits lifecycle events via `SagaEvents` (default implementation logs structured events). You can override by declaring your own `SagaEvents` bean.
+- `StepLoggingAspect` (registered by default) logs additional timing at method boundary.
+
+Recommendation:
+- Forward correlation id to logs and tracing systems.
+- Emit domain events for business milestones (e.g., order created) — the engine doesn’t publish events by itself.
+
+---
+
+## 12) Production checklist and best practices
+
+Design & modeling
+- Keep steps cohesive: each step should perform one business action with a clear inverse.
+- Validate the DAG: ensure all `dependsOn` reference existing steps; avoid hidden dependencies.
+- Use `@Saga(layerConcurrency = N)` to limit per‑layer concurrency if your downstreams have quotas.
+
+Resilience
+- Timeouts on every remote call; tune per service.
+- Retries with bounded attempts and backoff; consider jitter for thundering‑herd mitigation.
+- Idempotent compensations — safe to call multiple times.
+
+Data & contracts
+- Prefer typed DTOs for inputs/results; avoid raw maps.
+- Use parameter injection to minimize boilerplate and make data flows explicit.
+- Use `@SetVariable` to capture important computed values (e.g., `orderId`).
+
+HTTP and propagation
+- Always propagate `X-Transactional-Id` and user/context headers.
+- Fail fast on non‑2xx with meaningful exceptions; don’t swallow errors in steps.
+
+Operations & observability
+- Correlate logs with `correlationId`.
+- Measure per‑step latency, attempts, and failures; use `SagaResult` for run summaries.
+- Consider grouping compensations (`GROUPED_PARALLEL`) when safe and faster to roll back.
+
+Security
+- Do not place secrets in outbound headers or logs.
+- Validate and sanitize inputs to step calls.
+
+Testing
+- Unit test step methods with mocked gateways.
+- Integration test the saga using a Spring context, real WebClient to stubs, and `SagaEngine.execute(...)`.
+
+---
+
+## Appendix: Putting it all together (condensed example)
+
 ```java
+@Configuration
+@EnableTransactionalEngine
+class TxnEngineConfig {}
+
+@Saga(name = "OrderSaga")
+@Service
+class OrderSagaOrchestrator {
+  private final PaymentGateway payments;
+  private final InventoryGateway inventory;
+  private final OrdersGateway orders;
+  private final NotificationGateway notifications;
+
+  OrderSagaOrchestrator(PaymentGateway p, InventoryGateway i, OrdersGateway o, NotificationGateway n) {
+    this.payments = p; this.inventory = i; this.orders = o; this.notifications = n;
+  }
+
+  @SagaStep(id = "reserveFunds", compensate = "releaseFunds", retry = 2, backoffMs = 200, timeoutMs = 3000)
+  Mono<String> reserveFunds(@Input ReserveFundsCmd cmd, SagaContext ctx) { return payments.reserve(cmd, ctx); }
+  Mono<Void> releaseFunds(@Input ReserveFundsCmd cmd, SagaContext ctx) { return payments.release(cmd, ctx); }
+
+  @SagaStep(id = "reserveInventory", compensate = "releaseInventory", dependsOn = {"reserveFunds"})
+  Mono<String> reserveInventory(@Input ReserveInventoryCmd cmd, SagaContext ctx) { return inventory.reserve(cmd, ctx); }
+  Mono<Void> releaseInventory(@Input ReserveInventoryCmd cmd, SagaContext ctx) { return inventory.release(cmd, ctx); }
+
+  @SagaStep(id = "createOrder", compensate = "cancelOrder", dependsOn = {"reserveFunds", "reserveInventory"})
+  @SetVariable("orderId")
+  Mono<Long> createOrder(@Input CreateOrderCmd cmd, @FromStep("reserveFunds") String fundsRes,
+                         @FromStep("reserveInventory") String invRes, SagaContext ctx) {
+    return orders.create(cmd, fundsRes, invRes, ctx);
+  }
+  Mono<Void> cancelOrder(@Input CreateOrderCmd cmd, SagaContext ctx) { return orders.cancel(cmd, ctx); }
+
+  @SagaStep(id = "notifyCustomer", compensate = "", dependsOn = {"createOrder"})
+  Mono<Void> notifyCustomer(@Input NotifyCmd cmd, @Variable("orderId") Long orderId, SagaContext ctx) {
+    return notifications.send(cmd.customerId(), orderId, ctx);
+  }
+}
+
+// Programmatic execution
 StepInputs inputs = StepInputs.builder()
-  .forStepId("initBooking", new InitBookingCmd("cust-100", "trip-42"))
-  .forStepId("reserveFlight", new FlightReq("MAD", "SFO", "2025-10-01", 2))
+  .forStepId("reserveFunds", new ReserveFundsCmd("cust-123", 500_00))
+  .forStepId("reserveInventory", new ReserveInventoryCmd("SKU-001", 2))
+  .forStepId("createOrder", new CreateOrderCmd("cust-123", "SKU-001", 2, 500_00))
+  .forStepId("notifyCustomer", new NotifyCmd("cust-123", 0))
   .build();
+SagaContext ctx = new SagaContext();
+ctx.putHeader("X-User-Id", "user-789");
+SagaResult result = engine.execute("OrderSaga", inputs, ctx).block();
 ```
 
-Lazy resolvers that depend on context and prior results:
-```java
-StepInputs inputs = StepInputs.builder()
-  .forStepId("issueItinerary", c -> new IssueReq(
-      (String) c.getResult("initBooking"),
-      c.headers().get("X-User-Id")
-  ))
-  .build();
-```
-These values are cached once resolved so the same input is reused by compensation if needed.
-
-Happy trips and reliable compensations!
-
-
-## Cancellation
-
-Reactor-based execution implies cooperative cancellation. When a caller cancels the subscription returned by SagaEngine:
-
-- In-flight steps in the current layer continue to completion; running user code is not forcibly interrupted.
-- No further layers are started after cancellation is observed.
-- Cancellation alone does not trigger compensation. Compensation occurs only when a step fails and the engine transitions into the failure path.
-
-Recommended practices:
-- Implement steps using non-blocking, cancellable clients and avoid blocking calls.
-- Use doOnCancel in step Monos to propagate cancel signals to downstream clients where supported.
-- If you need compensations on user aborts, introduce a guard step that can fail fast on a cancellation/header flag, causing the engine to compensate prior steps.
-
-Notes:
-- SagaBuilder provides Duration-based configuration: backoff(Duration) and timeout(Duration). Millisecond variants are deprecated.
-- SagaEvents.onCompensated is emitted for both success and error cases; a null error indicates a successful compensation.
+You now have a working, production‑ready Saga that coordinates multiple services with resilience and clear compensation behavior. Continue exploring the [Reference Card](./REFERENCE_CARD.md) for API deep dives and additional patterns such as external steps and programmatic saga building.

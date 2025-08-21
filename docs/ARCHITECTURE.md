@@ -42,7 +42,7 @@ flowchart LR
   EV -.optional.-> TR[Tracing/Metrics]
 ```
 
-- SagaRegistry: discovers `@Saga` beans and their `@SagaStep` methods, builds `SagaDefinition`/`StepDefinition`, validates DAG, resolves proxy-safe invocation methods.
+- SagaRegistry: discovers `@Saga` beans and their `@SagaStep` methods, builds `SagaDefinition`/`StepDefinition`, validates DAG, resolves proxy-safe invocation methods. Then performs a second pass to discover `@ExternalSagaStep` (external steps) and `@CompensationSagaStep` (external compensations) on any Spring bean, wiring them into the target saga. External compensations take precedence over in-class ones; duplicate step ids (in-class vs external or between externals) are rejected.
 - SagaEngine: executes the DAG layer-by-layer with concurrency, retries/backoff, and timeouts; stores results/metrics in `SagaContext`; compensates on failure; emits `SagaEvents`.
 - SagaContext: per-execution, in-memory container for headers, variables, step statuses, results, attempts, and latencies.
 - SagaEvents: pluggable observability sink; default logger-based sink is provided, with optional tracing/metrics integration.
@@ -117,13 +117,19 @@ Compensation order is the reverse of the actual completion order of successful s
 
 ### Compensation policies
 
-Two compensation policies are supported by the engine:
+The engine supports multiple compensation strategies:
 - STRICT_SEQUENTIAL (default): compensate one step at a time in the exact reverse completion order.
-- GROUPED_PARALLEL: compensate in batches by original execution layer, running independent compensations in parallel within the batch. This reduces rollback time for wide layers.
+- GROUPED_PARALLEL: compensate in batches by original execution layer, running independent compensations in parallel within each batch. This reduces rollback time for wide layers.
+- RETRY_WITH_BACKOFF: sequential rollback with retry/backoff/timeout applied to each compensation (inherits step settings unless overridden per compensation).
+- CIRCUIT_BREAKER: sequential rollback that opens a circuit (skips remaining compensations) when a compensation marked as critical fails.
+- BEST_EFFORT_PARALLEL: runs all compensations in parallel; records errors via events without stopping others.
 
 When to use which
-- Use STRICT_SEQUENTIAL when compensations must respect a strict ordering due to business invariants or side‑effects, or when participants are sensitive to concurrency.
-- Use GROUPED_PARALLEL when there are many independent steps to undo, compensations are idempotent and safe in parallel, and you want to minimize total rollback time.
+- STRICT_SEQUENTIAL: when business invariants require strict ordering or participants are sensitive to concurrency.
+- GROUPED_PARALLEL: when compensations are independent and idempotent; minimizes total rollback time.
+- RETRY_WITH_BACKOFF: when compensations may transiently fail and benefit from bounded retries.
+- CIRCUIT_BREAKER: when certain compensations are critical and subsequent rollbacks should be skipped if they fail.
+- BEST_EFFORT_PARALLEL: when speed is paramount and partial failures are acceptable but should be observed.
 
 How to configure
 - Default Spring configuration wires STRICT_SEQUENTIAL. Override the SagaEngine bean to switch:
@@ -142,6 +148,13 @@ class EnginePolicyConfig {
 ```java
 SagaEngine engine = new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
 ```
+
+Compensation overrides (per step)
+- `compensationRetry`, `compensationBackoffMs`, `compensationTimeoutMs` let you override the step’s resilience knobs specifically for compensation. `-1` values inherit step settings.
+- `compensationCritical` marks a compensation as critical; used by CIRCUIT_BREAKER to decide when to open the circuit.
+
+Observability of compensation
+- Additional SagaEvents callbacks are emitted during rollback: `onCompensationStarted`, `onCompensationRetry`, `onCompensationSkipped`, `onCompensationCircuitOpen`, `onCompensationBatchCompleted`, and `onCompensated` (success or error).
 
 Visual (grouped compensation by layer)
 ```mermaid
