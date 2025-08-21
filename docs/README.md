@@ -11,6 +11,7 @@ If you are new to the project, start with the Tutorial, then explore the Archite
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)
   - A deeper dive into the engine’s design: registry, execution model, DAG validation, compensation strategies, and observability. Includes diagrams and rationale.
+  - Don’t miss: [Bean topology — singleton vs multiple SagaEngine beans](ARCHITECTURE.md#bean-topology-singleton-vs-multiple-sagaengine-beans) with practical guidance and Spring examples.
 
 - [SAGA-vs-TCC.md](SAGA-vs-TCC.md)
   - A short guide comparing the Saga and TCC patterns, with guidance on when to choose each and trade‑offs to consider.

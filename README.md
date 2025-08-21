@@ -20,6 +20,7 @@ This library does not replace database transactions; it coordinates cross-servic
 - [Architecture at a glance](#architecture-at-a-glance)
 - [How it works](#how-it-works)
 - [Compensation policies](#compensation-policies)
+- [Bean topology: singleton vs multiple SagaEngine beans](#bean-topology-singleton-vs-multiple-sagaengine-beans)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Complete step-by-step tutorial](#complete-step-by-step-tutorial)
@@ -447,6 +448,47 @@ SagaEngine engine = new SagaEngine(registry, events, SagaEngine.CompensationPoli
 ```
 
 See also: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for diagrams and deeper discussion.
+
+## Bean topology: singleton vs multiple SagaEngine beans
+
+TL;DR
+- Default to a single SagaEngine bean per microservice for best cache reuse and simplicity.
+- Consider multiple engines only if you need distinct defaults/policies or separate observability pipelines.
+
+Why a single bean is usually best
+- SagaEngine is stateless across runs; per-execution state lives in SagaContext. The internal caches are thread-safe and benefit from reuse.
+
+When to wire multiple engines
+- Different compensation policies by bounded context (e.g., payments uses GROUPED_PARALLEL; fulfillment uses STRICT_SEQUENTIAL).
+- Separate SagaEvents sinks (different tags/sampling/exports) per domain.
+- Controlled experiments/feature flags without touching the primary engine.
+
+How to configure
+- Single bean (recommended):
+```java
+@Configuration
+class EngineConfig {
+  @Bean SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events) {
+    return new SagaEngine(registry, events); // STRICT_SEQUENTIAL by default
+  }
+}
+```
+- Multiple beans with qualifiers:
+```java
+@Configuration
+class MultiEngineConfig {
+  @Bean @Qualifier("paymentsEngine")
+  SagaEngine paymentsEngine(SagaRegistry registry, SagaEvents events) {
+    return new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
+  }
+  @Bean @Qualifier("fulfillmentEngine")
+  SagaEngine fulfillmentEngine(SagaRegistry registry, SagaEvents events) {
+    return new SagaEngine(registry, events); // STRICT_SEQUENTIAL by default
+  }
+}
+```
+
+Read more: Detailed rationale, trade-offs, and caveats in [docs/ARCHITECTURE.md — Bean topology](docs/ARCHITECTURE.md#bean-topology-singleton-vs-multiple-sagaengine-beans).
 
 ## Installation
 Maven

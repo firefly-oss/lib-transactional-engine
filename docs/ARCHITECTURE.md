@@ -13,6 +13,7 @@ If you are new to the library, start with README.md for a quick overview, then c
 - [Performance and memory techniques](#performance-and-memory-techniques)
 - [Memory footprint considerations](#memory-footprint-considerations)
 - [Configuration knobs and trade-offs](#configuration-knobs-and-trade-offs)
+- [Bean topology: singleton vs multiple SagaEngine beans](#bean-topology-singleton-vs-multiple-sagaengine-beans)
 - [Class relationships (simplified)](#class-relationships-simplified)
 - [Future extensions (non-goals today)](#future-extensions-non-goals-today)
 
@@ -291,3 +292,75 @@ classDiagram
 
 Tip: For a complete, runnable example that uses these concepts, see docs/TUTORIAL.md.
 
+
+## Bean topology: singleton vs multiple SagaEngine beans
+
+TL;DR
+- Default to a single SagaEngine bean per microservice. It’s safe for concurrent reuse and gives the best cache/observability reuse.
+- Consider multiple engines only when you truly need different defaults/policies or separate observability sinks.
+- Multiple engines do not improve throughput by themselves and do not create dedicated thread pools.
+
+### Context
+- SagaEngine holds only immutable collaborators (SagaRegistry, SagaEvents, CompensationPolicy). Per-execution state lives in SagaContext, and the engine’s internal caches use thread-safe structures (ConcurrentHashMap). There is no cross-run mutable state. This makes the engine safe to reuse concurrently from many threads.
+
+### Recommended default: single SagaEngine bean
+- For most services, declare a single SagaEngine @Bean and reuse it for all saga executions. This maximizes cache reuse, minimizes allocations, and provides a single, consistent place to attach observability (SagaEvents) and defaults.
+
+### When to consider multiple engines in the same microservice
+- Distinct execution/rollback policies per bounded context
+  - Example: payments sagas prefer GROUPED_PARALLEL compensation to speed rollbacks; fulfillment prefers STRICT_SEQUENTIAL for stronger ordering guarantees.
+- Segregated observability pipelines
+  - Route payments sagas to a different SagaEvents implementation (sampling, tags, sinks) than fulfillment/customer-support sagas.
+- Controlled experimentation or feature flags
+  - Run a subset of sagas through an alternate engine instance with different defaults without perturbing the primary engine.
+- Organizational multi-tenancy boundaries
+  - Hard isolation of event streams or admin controls by wiring different engine beans behind qualifiers. Note: concurrency/SLA isolation is primarily managed per saga via @Saga.layerConcurrency; multiple engines don’t create separate thread pools.
+
+### Non-reasons to create multiple engines
+- Throughput alone: the engine already executes steps concurrently within layers, and uses Reactor schedulers. Additional engine instances won’t bypass per-layer concurrency or materially increase throughput.
+- “Isolation” of discovered sagas: all engines share the same SagaRegistry (built from the Spring ApplicationContext). Prefer naming and calling the desired saga; only split contexts if you truly need separate registries.
+
+### Spring configuration examples
+
+Single engine (recommended):
+```java
+@Configuration
+class EngineConfig {
+  @Bean
+  SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events) {
+    return new SagaEngine(registry, events, SagaEngine.CompensationPolicy.STRICT_SEQUENTIAL);
+  }
+}
+```
+
+Multiple engines with qualifiers:
+```java
+@Configuration
+class MultiEngineConfig {
+  @Bean
+  @Qualifier("paymentsEngine")
+  SagaEngine paymentsEngine(SagaRegistry registry, PaymentsSagaEvents events) {
+    return new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
+  }
+
+  @Bean
+  @Qualifier("fulfillmentEngine")
+  SagaEngine fulfillmentEngine(SagaRegistry registry, FulfillmentSagaEvents events) {
+    return new SagaEngine(registry, events); // STRICT_SEQUENTIAL by default
+  }
+}
+```
+
+### Usage with qualifiers
+```java
+@Service
+class PaymentsService {
+  private final SagaEngine engine;
+  PaymentsService(@Qualifier("paymentsEngine") SagaEngine engine) { this.engine = engine; }
+}
+```
+
+### Operational notes and caveats
+- Don’t create per-request engines: you’ll duplicate caches (argResolverCache) and increase GC pressure for no benefit.
+- All engines operate over the same SagaRegistry in a single Spring context. If you truly need a different set of discovered sagas, consider separate application contexts or a filtered/alternate registry bean.
+- Engine instances do not own dedicated scheduler pools; cpuBound steps use Reactor’s parallel scheduler.
