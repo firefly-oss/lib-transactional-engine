@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import com.catalis.transactionalengine.tools.MethodRefs;
 
 /**
  * Immutable, typed DSL to provide per-step inputs without exposing Map<String,Object> in the public API.
@@ -124,12 +125,40 @@ public final class StepInputs {
             return this;
         }
 
+        // Overloads to support method references (Class::method) via serializable lambdas
+        public <A, R> Builder forStep(MethodRefs.Fn1<A, R> ref, Object input) {
+            return forStep(MethodRefs.methodOf(ref), input);
+        }
+        public <A, B, R> Builder forStep(MethodRefs.Fn2<A, B, R> ref, Object input) {
+            return forStep(MethodRefs.methodOf(ref), input);
+        }
+        public <A, B, C, R> Builder forStep(MethodRefs.Fn3<A, B, C, R> ref, Object input) {
+            return forStep(MethodRefs.methodOf(ref), input);
+        }
+        public <A, B, C, D, R> Builder forStep(MethodRefs.Fn4<A, B, C, D, R> ref, Object input) {
+            return forStep(MethodRefs.methodOf(ref), input);
+        }
+
         public Builder forStep(Method stepMethod, StepInputResolver resolver) {
             Objects.requireNonNull(stepMethod, "stepMethod");
             Objects.requireNonNull(resolver, "resolver");
             String id = extractId(stepMethod);
             resolvers.put(id, resolver);
             return this;
+        }
+
+        // Overloads to support method references with lazy resolver
+        public <A, R> Builder forStep(MethodRefs.Fn1<A, R> ref, StepInputResolver resolver) {
+            return forStep(MethodRefs.methodOf(ref), resolver);
+        }
+        public <A, B, R> Builder forStep(MethodRefs.Fn2<A, B, R> ref, StepInputResolver resolver) {
+            return forStep(MethodRefs.methodOf(ref), resolver);
+        }
+        public <A, B, C, R> Builder forStep(MethodRefs.Fn3<A, B, C, R> ref, StepInputResolver resolver) {
+            return forStep(MethodRefs.methodOf(ref), resolver);
+        }
+        public <A, B, C, D, R> Builder forStep(MethodRefs.Fn4<A, B, C, D, R> ref, StepInputResolver resolver) {
+            return forStep(MethodRefs.methodOf(ref), resolver);
         }
 
         /** Pragmatic convenience: allow addressing by step id string when method ref is not convenient. */
