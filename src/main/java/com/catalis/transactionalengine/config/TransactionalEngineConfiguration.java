@@ -77,6 +77,7 @@ public class TransactionalEngineConfiguration {
     }
 
     @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "transactionalengine.step-logging.enabled", havingValue = "true", matchIfMissing = true)
     public StepLoggingAspect stepLoggingAspect() {
         return new StepLoggingAspect();
     }
