@@ -33,7 +33,8 @@ import java.lang.annotation.*;
 @Documented
 public @interface SagaStep {
     String id();
-    String compensate();
+    /** Optional name of an in-class compensation method. Leave empty when using @CompensationSagaStep. */
+    String compensate() default "";
     String[] dependsOn() default {};
     int retry() default 0;
     /** Deprecated: use programmatic Duration configuration via SagaBuilder or rely on defaults. */
