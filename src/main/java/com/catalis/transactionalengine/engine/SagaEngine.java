@@ -23,6 +23,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
+import com.catalis.transactionalengine.annotations.Saga;
+import com.catalis.transactionalengine.tools.MethodRefs;
+
 /**
  * Core orchestrator that executes Sagas purely in-memory (no persistence).
  * <p>
@@ -205,6 +208,79 @@ public class SagaEngine {
         Objects.requireNonNull(sagaName, "sagaName");
         SagaDefinition saga = registry.getSaga(sagaName);
         return execute(saga, inputs, null);
+    }
+
+    // New overloads: execute by Saga class or method reference
+    public Mono<SagaResult> execute(Class<?> sagaClass, StepInputs inputs, SagaContext ctx) {
+        Objects.requireNonNull(sagaClass, "sagaClass");
+        String sagaName = resolveSagaName(sagaClass);
+        return execute(sagaName, inputs, ctx);
+    }
+
+    /** Convenience overload: auto-create context. */
+    public Mono<SagaResult> execute(Class<?> sagaClass, StepInputs inputs) {
+        Objects.requireNonNull(sagaClass, "sagaClass");
+        String sagaName = resolveSagaName(sagaClass);
+        return execute(sagaName, inputs);
+    }
+
+    /** Map-based convenience; prefer StepInputs. */
+    @Deprecated
+    public Mono<SagaResult> execute(Class<?> sagaClass, Map<String, Object> stepInputs, SagaContext ctx) {
+        Objects.requireNonNull(sagaClass, "sagaClass");
+        String sagaName = resolveSagaName(sagaClass);
+        return execute(sagaName, stepInputs, ctx);
+    }
+
+    /** Map-based convenience; prefer StepInputs. */
+    @Deprecated
+    public Mono<SagaResult> execute(Class<?> sagaClass, Map<String, Object> stepInputs) {
+        Objects.requireNonNull(sagaClass, "sagaClass");
+        String sagaName = resolveSagaName(sagaClass);
+        return execute(sagaName, stepInputs);
+    }
+
+    // Method reference overloads (Class::method) to infer the saga from the declaring class
+    public <A, R> Mono<SagaResult> execute(MethodRefs.Fn1<A, R> methodRef, StepInputs inputs, SagaContext ctx) {
+        Method m = MethodRefs.methodOf(methodRef);
+        return execute(m.getDeclaringClass(), inputs, ctx);
+    }
+    public <A, B, R> Mono<SagaResult> execute(MethodRefs.Fn2<A, B, R> methodRef, StepInputs inputs, SagaContext ctx) {
+        Method m = MethodRefs.methodOf(methodRef);
+        return execute(m.getDeclaringClass(), inputs, ctx);
+    }
+    public <A, B, C, R> Mono<SagaResult> execute(MethodRefs.Fn3<A, B, C, R> methodRef, StepInputs inputs, SagaContext ctx) {
+        Method m = MethodRefs.methodOf(methodRef);
+        return execute(m.getDeclaringClass(), inputs, ctx);
+    }
+    public <A, B, C, D, R> Mono<SagaResult> execute(MethodRefs.Fn4<A, B, C, D, R> methodRef, StepInputs inputs, SagaContext ctx) {
+        Method m = MethodRefs.methodOf(methodRef);
+        return execute(m.getDeclaringClass(), inputs, ctx);
+    }
+
+    public <A, R> Mono<SagaResult> execute(MethodRefs.Fn1<A, R> methodRef, StepInputs inputs) {
+        Method m = MethodRefs.methodOf(methodRef);
+        return execute(m.getDeclaringClass(), inputs);
+    }
+    public <A, B, R> Mono<SagaResult> execute(MethodRefs.Fn2<A, B, R> methodRef, StepInputs inputs) {
+        Method m = MethodRefs.methodOf(methodRef);
+        return execute(m.getDeclaringClass(), inputs);
+    }
+    public <A, B, C, R> Mono<SagaResult> execute(MethodRefs.Fn3<A, B, C, R> methodRef, StepInputs inputs) {
+        Method m = MethodRefs.methodOf(methodRef);
+        return execute(m.getDeclaringClass(), inputs);
+    }
+    public <A, B, C, D, R> Mono<SagaResult> execute(MethodRefs.Fn4<A, B, C, D, R> methodRef, StepInputs inputs) {
+        Method m = MethodRefs.methodOf(methodRef);
+        return execute(m.getDeclaringClass(), inputs);
+    }
+
+    private static String resolveSagaName(Class<?> sagaClass) {
+        Saga ann = sagaClass.getAnnotation(Saga.class);
+        if (ann == null) {
+            throw new IllegalArgumentException("Class " + sagaClass.getName() + " is not annotated with @Saga");
+        }
+        return ann.name();
     }
 
     /** Transitional convenience: allow Map-based inputs; prefer StepInputs DSL. */
