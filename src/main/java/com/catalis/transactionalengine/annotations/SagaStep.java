@@ -23,9 +23,8 @@ import java.lang.annotation.*;
  * Compensation method signatures mirror the above; when an argument is expected, the engine will pass either the original
  * step input or the step result (if types match), plus SagaContext when present. See README for details.
  *
- * Duration configuration (updated):
- * - ISO-8601 String-based fields timeout() and backoff() are deprecated.
- * - Prefer setting durations via SagaBuilder's Duration-based methods or omit them to use defaults.
+ * Duration configuration:
+ * - Prefer Duration via SagaBuilder for readability. When using annotations, specify milliseconds via backoffMs/timeoutMs.
  * - Defaults: backoff = 100ms; timeout = disabled (0). Use retry with backoff for resilience.
  */
 @Target(ElementType.METHOD)
@@ -37,22 +36,14 @@ public @interface SagaStep {
     String compensate() default "";
     String[] dependsOn() default {};
     int retry() default 0;
-    /** Deprecated: use programmatic Duration configuration via SagaBuilder or rely on defaults. */
-    @Deprecated
-    String timeout() default "";
-    /** Deprecated: use programmatic Duration configuration via SagaBuilder or rely on defaults. */
-    @Deprecated
-    String backoff() default "";
+    /** Backoff between retries (milliseconds). -1 = inherit default. */
+    long backoffMs() default -1;
+    /** Per-attempt timeout (milliseconds). 0 = disabled; -1 = inherit default. */
+    long timeoutMs() default -1;
     /** Optional jitter configuration: when true, backoff delay will be randomized by jitterFactor. */
     boolean jitter() default false;
     /** Jitter factor in range [0.0, 1.0]. e.g., 0.5 means +/-50% around backoff. */
     double jitterFactor() default 0.5d;
-    /** Legacy: millisecond fields are still accepted. Prefer builder-based Duration or defaults. */
-    @Deprecated
-    long backoffMs() default 0;
-    /** Legacy: millisecond fields are still accepted. Prefer builder-based Duration or defaults. */
-    @Deprecated
-    long timeoutMs() default 0;
     String idempotencyKey() default "";
     /** Hint that this step performs CPU-bound work and can be scheduled on a CPU scheduler. */
     boolean cpuBound() default false;

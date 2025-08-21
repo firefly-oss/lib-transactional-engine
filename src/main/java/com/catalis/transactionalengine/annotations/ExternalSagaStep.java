@@ -26,16 +26,12 @@ public @interface ExternalSagaStep {
     String compensate() default "";
     String[] dependsOn() default {};
     int retry() default 0;
-    @Deprecated
-    String timeout() default "";
-    @Deprecated
-    String backoff() default "";
+    /** Backoff between retries (milliseconds). -1 = inherit default. */
+    long backoffMs() default -1;
+    /** Per-attempt timeout (milliseconds). 0 = disabled; -1 = inherit default. */
+    long timeoutMs() default -1;
     boolean jitter() default false;
     double jitterFactor() default 0.5d;
-    @Deprecated
-    long backoffMs() default 0;
-    @Deprecated
-    long timeoutMs() default 0;
     String idempotencyKey() default "";
     boolean cpuBound() default false;
 
