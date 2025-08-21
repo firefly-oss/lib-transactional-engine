@@ -161,6 +161,38 @@ SagaResult result = engine.execute("PaymentSaga", inputs, ctx).block();
 
 Resolvers are evaluated right before step execution and cached for compensation if needed.
 
+Conveniences when building inputs:
+```java
+// Single mapping
+StepInputs one = StepInputs.of("reserveFunds", new ReserveCmd("customer-123", 500_00));
+
+// From an existing map of concrete values
+StepInputs many = StepInputs.of(Map.of(
+  "reserveFunds", new ReserveCmd("customer-123", 500_00),
+  "createOrder",  new CreateOrderCmd("customer-123", 500_00)
+));
+
+// Extend an existing StepInputs without mutating it
+StepInputs extended = StepInputs.builderFrom(many)
+  .forStepId("notify", new NotifyReq("email"))
+  .build();
+
+// Bulk add helpers on the builder
+StepInputs bulk = StepInputs.builder()
+  .forSteps(Map.of(
+    "reserveFunds", new ReserveCmd("customer-123", 500_00),
+    "createOrder",  new CreateOrderCmd("customer-123", 500_00)
+  ))
+  .withResolvers(Map.of(
+    "issueTicket", ctx -> new IssueTicketReq(
+       (FlightRes) ctx.getResult("reserveFlight"),
+       (PaymentReceipt) ctx.getResult("capturePayment"),
+       ctx.headers().get("X-User-Id")
+    )
+  ))
+  .build();
+```
+
 ### SagaResult for comprehensive execution results
 The new `execute()` API returns a `SagaResult` that provides typed access to step results and execution metadata:
 

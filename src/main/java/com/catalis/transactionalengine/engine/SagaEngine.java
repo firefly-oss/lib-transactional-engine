@@ -378,11 +378,14 @@ public class SagaEngine {
         return execution
                 .doOnNext(res -> {
                     ctx.putResult(stepId, res);
-                    var setVarAnn = sd.stepMethod.getAnnotation(com.catalis.transactionalengine.annotations.SetVariable.class);
-                    if (setVarAnn != null) {
-                        String name = setVarAnn.value();
-                        if (name != null && !name.isBlank()) {
-                            ctx.putVariable(name, res);
+                    // If this step was defined by method, support @SetVariable; handler-based steps skip this
+                    if (sd.stepMethod != null) {
+                        var setVarAnn = sd.stepMethod.getAnnotation(com.catalis.transactionalengine.annotations.SetVariable.class);
+                        if (setVarAnn != null) {
+                            String name = setVarAnn.value();
+                            if (name != null && !name.isBlank()) {
+                                ctx.putVariable(name, res);
+                            }
                         }
                     }
                 })

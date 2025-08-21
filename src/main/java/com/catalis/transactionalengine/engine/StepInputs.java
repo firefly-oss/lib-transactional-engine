@@ -27,8 +27,40 @@ public final class StepInputs {
         this.resolvers = resolvers;
     }
 
+    /**
+     * Create a new empty builder.
+     */
     public static Builder builder() {
         return new Builder();
+    }
+
+    /**
+     * Create a new builder pre-populated from an existing StepInputs instance.
+     * Useful to extend inputs fluently without mutating the original.
+     */
+    public static Builder builderFrom(StepInputs existing) {
+        Builder b = new Builder();
+        if (existing != null) {
+            b.values.putAll(existing.values);
+            b.resolvers.putAll(existing.resolvers);
+        }
+        return b;
+    }
+
+    /**
+     * Convenience factory for a single step id to value mapping.
+     */
+    public static StepInputs of(String stepId, Object input) {
+        return builder().forStepId(stepId, input).build();
+    }
+
+    /**
+     * Convenience factory to create StepInputs from a map of concrete values.
+     */
+    public static StepInputs of(Map<String, Object> values) {
+        Builder b = builder();
+        if (values != null) values.forEach(b::forStepId);
+        return b.build();
     }
 
     public static StepInputs empty() {
@@ -111,6 +143,18 @@ public final class StepInputs {
             Objects.requireNonNull(stepId, "stepId");
             Objects.requireNonNull(resolver, "resolver");
             resolvers.put(stepId, resolver);
+            return this;
+        }
+
+        /** Bulk add of concrete inputs by step id. Null map is ignored. */
+        public Builder forSteps(Map<String, Object> inputs) {
+            if (inputs != null) inputs.forEach(this::forStepId);
+            return this;
+        }
+
+        /** Bulk add of lazy resolvers by step id. Null map is ignored. */
+        public Builder withResolvers(Map<String, StepInputResolver> resolvers) {
+            if (resolvers != null) resolvers.forEach(this::forStepId);
             return this;
         }
 
