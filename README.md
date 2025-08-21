@@ -298,6 +298,41 @@ Usage in your microservice repo:
 mvn -Pgenerate-saga-graph exec:java
 ```
 
+Troubleshooting: exec:java ClassNotFoundException
+- Symptom: org.codehaus.mojo.exec... ClassNotFoundException: com.catalis.transactionalengine.tools.SagaGraphGenerator
+- Causes and fixes:
+  - The library is not on your module's classpath. Ensure your microservice declares a dependency on this library (compile scope):
+    
+    <dependency>
+      <groupId>com.catalis</groupId>
+      <artifactId>lib-transactional-engine</artifactId>
+      <version>${version}</version>
+    </dependency>
+    
+  - You are running exec:java with a narrow classpath. Either:
+    - set classpathScope to test when you need test sources scanned (includes compile/runtime deps):
+      
+      mvn -Dexec.classpathScope=test -Dexec.mainClass=com.catalis.transactionalengine.tools.SagaGraphGenerator exec:java
+      
+    - or add the library as a plugin dependency to exec-maven-plugin so the class is available even if not a project dependency:
+      
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.5.1</version>
+        <configuration>
+          <mainClass>com.catalis.transactionalengine.tools.SagaGraphGenerator</mainClass>
+          <classpathScope>runtime</classpathScope>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>com.catalis</groupId>
+            <artifactId>lib-transactional-engine</artifactId>
+            <version>${version}</version>
+          </dependency>
+        </dependencies>
+      </plugin>
+
 Visuals and legend
 - Steps are boxes; start steps (no dependencies) have a thicker border; terminal steps (no dependents) are light blue.
 - CPU-bound steps are filled gold.
