@@ -21,6 +21,9 @@ Note (new): SagaResult now includes compensation results and errors per step, an
 - [REFERENCE_CARD.md](REFERENCE_CARD.md)
   - An at‑a‑glance cheat sheet for annotations, core types, configuration, common APIs, and quick snippets.
 
+- [PROGRAMATIC_QUICK_GUIDE.md](PROGRAMATIC_QUICK_GUIDE.md)
+  - A step‑by‑step tutorial on building sagas programmatically (without annotations): dynamic DAGs, handlers/compensations, execution, and common patterns.
+
 ## Where to start
 
 1. New to the library? Read the [Tutorial](TUTORIAL.md).

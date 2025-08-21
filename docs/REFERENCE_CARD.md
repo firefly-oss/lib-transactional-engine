@@ -14,8 +14,9 @@ Quick navigation
 - [Spring setup](#spring-setup)
 - [Declare a Saga (annotations)](#declaring-a-saga-annotations)
 - [Parameter injection](#parameter-injection-in-step-signatures)
-- [Programmatic builder](#programmatic-saga-building-fluent)
+- [Programmatic builder](#programmatic-saga-building)
 - [Execution](#execution)
+- [Results and reporting](#results-and-reporting-new)
 - [Resilience controls](#retry-backoff-timeout)
 - [Idempotency](#idempotency-per-run)
 - [Compensation policies](#compensation-policies)
@@ -134,30 +135,37 @@ public class PaymentOrchestrator {
 }
 ```
 
-## Programmatic saga building (fluent)
-Alternative to annotation-driven execution when you need dynamic flows.
-
-```java
-SagaResult result = SagaBuilder.named("PaymentSaga")
-  .step("reserveFunds", () -> svc.reserve(...))
-    .retry(2)
-    .backoff(Duration.ofMillis(300))
-    .timeout(Duration.ofSeconds(5))
-  .step("createOrder", () -> svc.create(...))
-    .dependsOn("reserveFunds")
-  .executeWith(engine, ctx);
-```
+## Programmatic saga building
+For programmatic workflows (no annotations), see the Programmatic Quick Guide: [PROGRAMATIC_QUICK_GUIDE.md](PROGRAMATIC_QUICK_GUIDE.md).
+It covers SagaBuilder, handlers/compensations, dynamic graphs (fan-out/conditional), execution, resilience, and common patterns.
 
 ## Execution
 ```java
 StepInputs inputs = StepInputs.builder()
-  .forStepId("reserveFunds", new ReserveCmd("customer-123", 500_00))
-  .forStepId("createOrder", new CreateOrderCmd("customer-123", 500_00))
+  .forStep(Orchestrator::reserveFunds, new ReserveCmd("customer-123", 500_00))
+  .forStep(Orchestrator::createOrder, new CreateOrderCmd("customer-123", 500_00))
   .build();
 
 SagaResult result = engine.execute("PaymentSaga", inputs, ctx).block();
 Long orderId = result.resultOf("createOrder", Long.class).orElse(null);
 ```
+
+### Per-item expansion (ExpandEach)
+Expand a single logical step into N clones at execution time; each clone inherits the original compensation and dependents are rewired to depend on all clones.
+```java
+List<Order> items = fetchOrders();
+StepInputs inputs = StepInputs.builder()
+  // Default clone ids: insert#0, insert#1, ...
+  //.forStep(Steps::insert, ExpandEach.of(items))
+  // Or custom suffix per item: insert:123, insert:456, ...
+  .forStep(Steps::insert, ExpandEach.of(items, it -> ((Order) it).id()))
+  .build();
+
+SagaResult result = engine.execute("OrderSaga", inputs, ctx).block();
+```
+Notes
+- Works for annotation-based steps and programmatic definitions alike.
+- Dependents of "insert" are rewired to depend on all clones; completed clones are compensated individually on failure.
 
 ### Results and reporting (new)
 - `SagaResult.steps()` always contains all declared steps preserving saga declaration order. Each step outcome includes:
@@ -297,3 +305,5 @@ See also
 - [TUTORIAL.md](TUTORIAL.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [SAGA-vs-TCC.md](SAGA-vs-TCC.md)
+
+Last updated: 2025-08-21

@@ -384,10 +384,10 @@ import com.catalis.transactionalengine.core.SagaResult;
 
 // Assemble inputs per step id
 StepInputs inputs = StepInputs.builder()
-  .forStepId("reserveFunds", new ReserveFundsCmd("cust-123", 500_00))
-  .forStepId("reserveInventory", new ReserveInventoryCmd("SKU-001", 2))
-  .forStepId("createOrder", new CreateOrderCmd("cust-123", "SKU-001", 2, 500_00))
-  .forStepId("notifyCustomer", new NotifyCmd("cust-123", 0)) // orderId will be known after createOrder
+  .forStep(OrderSagaOrchestrator::reserveFunds, new ReserveFundsCmd("cust-123", 500_00))
+  .forStep(OrderSagaOrchestrator::reserveInventory, new ReserveInventoryCmd("SKU-001", 2))
+  .forStep(OrderSagaOrchestrator::createOrder, new CreateOrderCmd("cust-123", "SKU-001", 2, 500_00))
+  .forStep(OrderSagaOrchestrator::notifyCustomer, new NotifyCmd("cust-123", 0)) // orderId will be known after createOrder
   .build();
 
 SagaContext ctx = new SagaContext();
@@ -416,6 +416,80 @@ List<String> rolledBack = report.compensatedSteps();
 ```
 
 Tip: `StepInputs` also supports lazy resolvers evaluated at execution time. See `StepInputs.Builder#forStepId(String, StepInputResolver)` if you want to derive inputs from headers/variables.
+
+---
+
+### 8.2) Sending to many recipients (ExpandEach) — emails/phones with compensation
+When you need to perform the same action for a list (e.g., notify a customer in several channels: emails and/or phone numbers), avoid implementing a loop inside one step. Instead, use ExpandEach to expand one logical step into N clones at execution time — each clone retains its own compensation. If one item fails (invalid email/phone), the engine will compensate only the already-completed clones by calling their compensation, and then continue global compensation as needed.
+
+We will adapt our Order scenario to send notifications to multiple recipients. We’ll keep createOrder as-is and add a per-recipient step with compensation.
+
+Orchestrator methods
+```java
+import com.catalis.transactionalengine.annotations.SagaStep;
+import com.catalis.transactionalengine.core.SagaContext;
+import reactor.core.publisher.Mono;
+
+// New DTOs for this section
+record Recipient(String type, String value) { /* type = "email" | "phone" */ }
+record SendNotificationCmd(Long orderId, Recipient recipient) {}
+
+public class OrderSagaOrchestrator {
+
+  // existing steps: reserveFunds, reserveInventory, createOrder ...
+
+  // 8.2.1 Per-recipient send with compensation
+  @SagaStep(id = "sendNotification", compensate = "deleteNotification", dependsOn = {"createOrder"})
+  public Mono<String> sendNotification(SendNotificationCmd cmd, SagaContext ctx) {
+    // Imagine NotificationGateway has: sendEmail, sendSms returning messageId
+    return switch (cmd.recipient().type()) {
+      case "email" -> notifications.sendEmail(cmd.recipient().value(), cmd.orderId(), ctx);
+      case "phone" -> notifications.sendSms(cmd.recipient().value(), cmd.orderId(), ctx);
+      default -> Mono.error(new IllegalArgumentException("Unknown recipient type"));
+    };
+  }
+
+  // Compensation deletes the previously sent message by messageId (which is the step result)
+  public Mono<Void> deleteNotification(String messageId, SagaContext ctx) {
+    return notifications.delete(messageId, ctx);
+  }
+}
+```
+
+Programmatic inputs with ExpandEach
+```java
+import com.catalis.transactionalengine.engine.StepInputs;
+import com.catalis.transactionalengine.engine.ExpandEach;
+
+List<Recipient> recipients = List.of(
+  new Recipient("email", "ok@example.com"),
+  new Recipient("phone", "+15550123"),
+  new Recipient("email", "invalid@@example") // will fail validation downstream
+);
+
+StepInputs inputs = StepInputs.builder()
+  .forStep(OrderSagaOrchestrator::reserveFunds, new ReserveFundsCmd("cust-123", 500_00))
+  .forStep(OrderSagaOrchestrator::reserveInventory, new ReserveInventoryCmd("SKU-001", 2))
+  .forStep(OrderSagaOrchestrator::createOrder, new CreateOrderCmd("cust-123", "SKU-001", 2, 500_00))
+  // Expand one logical step into per-item clones. Default ids: sendNotification#0, #1, #2 ...
+  .forStep(OrderSagaOrchestrator::sendNotification, ExpandEach.of(recipients, it -> {
+      Recipient r = (Recipient) it; return r.type() + ":" + r.value(); // ids like sendNotification:email:ok@example.com
+  }))
+  .build();
+
+SagaResult result = engine.execute("OrderSaga", inputs, ctx).block();
+```
+
+What happens at runtime
+- The engine will create a clone per recipient: sendNotification:email:ok@example.com, sendNotification:phone:+15550123, sendNotification:email:invalid@@example
+- Suppose the first two succeed and the third fails due to validation in the Notifications service.
+- The saga marks the third clone as failed and starts compensation for completed clones in reverse order: it calls deleteNotification(messageId) for the second, then for the first.
+- After per-recipient rollback, the engine proceeds to compensate upstream steps according to the configured policy (e.g., cancelOrder, releaseInventory, releaseFunds), because a dependent step failed.
+
+Notes
+- Each clone passes its own input (SendNotificationCmd) into the handler; the compensation receives the step result (messageId) by type.
+- If you don’t provide a suffix function, clone ids will be sendNotification#0..#N. Providing a suffix helps correlate per-item outcomes.
+- Dependents of sendNotification (if any) are rewired to depend on all clones, preserving DAG correctness.
 
 ---
 
@@ -569,10 +643,10 @@ class OrderSagaOrchestrator {
 
 // Programmatic execution
 StepInputs inputs = StepInputs.builder()
-  .forStepId("reserveFunds", new ReserveFundsCmd("cust-123", 500_00))
-  .forStepId("reserveInventory", new ReserveInventoryCmd("SKU-001", 2))
-  .forStepId("createOrder", new CreateOrderCmd("cust-123", "SKU-001", 2, 500_00))
-  .forStepId("notifyCustomer", new NotifyCmd("cust-123", 0))
+  .forStep(OrderSagaOrchestrator::reserveFunds, new ReserveFundsCmd("cust-123", 500_00))
+  .forStep(OrderSagaOrchestrator::reserveInventory, new ReserveInventoryCmd("SKU-001", 2))
+  .forStep(OrderSagaOrchestrator::createOrder, new CreateOrderCmd("cust-123", "SKU-001", 2, 500_00))
+  .forStep(OrderSagaOrchestrator::notifyCustomer, new NotifyCmd("cust-123", 0))
   .build();
 SagaContext ctx = new SagaContext();
 ctx.putHeader("X-User-Id", "user-789");
