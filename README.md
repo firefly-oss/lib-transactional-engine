@@ -16,6 +16,7 @@ Table of contents
 - [Core concepts](#core-concepts)
 - [Programmatic builder](#programmatic-builder)
 - [Compensation policies](#compensation-policies)
+- [Graph generation (Sagas DAG via Graphviz)](#graph-generation-sagas-dag-via-graphviz)
 - [Best practices](#best-practices)
 - [Documentation](#documentation)
 - [FAQ / Troubleshooting](#faq--troubleshooting)
@@ -241,7 +242,69 @@ Observability
 - New `SagaEvents` callbacks provide compensation visibility: `onCompensationStarted`, `onCompensationRetry`, `onCompensationSkipped`, `onCompensationCircuitOpen`, `onCompensationBatchCompleted`.
 - Wire a custom `SagaEvents` bean to export metrics/traces; the default logger implementation will log these events.
 
-## Best practices
+## Graph generation (Sagas DAG via Graphviz)
+Generate a DOT/PNG/SVG diagram of all sagas discovered in your microservice using a simple Maven command. This uses a CLI included in this library that bootstraps a lightweight Spring context, scans your packages for `@Saga`, `@SagaStep`, `@ExternalSagaStep`, and `@CompensationSagaStep`, and outputs a Graphviz graph.
+
+Quick command
+```
+mvn -q \
+  -Dexec.classpathScope=test \
+  -Dexec.mainClass=com.catalis.transactionalengine.tools.SagaGraphGenerator \
+  -Dexec.args="--base-packages com.yourcompany.yourservice --output target/sagas.dot --format png" \
+  exec:java
+```
+Notes
+- Replace `com.yourcompany.yourservice` with your microservice base package(s). You can pass multiple, comma-separated.
+- `--format` can be `dot` (default), `png`, or `svg`. For `png`/`svg`, Graphviz `dot` must be installed and available on PATH.
+- The output will be written to `target/sagas.dot` (and `target/sagas.png` if `--format png`).
+- If your orchestrators/steps live in test sources, keeping `-Dexec.classpathScope=test` ensures test classes are also scanned.
+
+Optional: add a Maven profile to your microservice
+```xml
+<profiles>
+  <profile>
+    <id>generate-saga-graph</id>
+    <build>
+      <plugins>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>exec-maven-plugin</artifactId>
+          <version>3.5.0</version>
+          <executions>
+            <execution>
+              <goals><goal>java</goal></goals>
+            </execution>
+          </executions>
+          <configuration>
+            <mainClass>com.catalis.transactionalengine.tools.SagaGraphGenerator</mainClass>
+            <classpathScope>test</classpathScope>
+            <arguments>
+              <argument>--base-packages</argument>
+              <argument>com.yourcompany.yourservice</argument>
+              <argument>--output</argument>
+              <argument>${project.build.directory}/sagas.dot</argument>
+              <argument>--format</argument>
+              <argument>png</argument>
+            </arguments>
+          </configuration>
+        </plugin>
+      </plugins>
+    </build>
+  </profile>
+</profiles>
+```
+Usage in your microservice repo:
+```
+mvn -Pgenerate-saga-graph exec:java
+```
+
+Visuals and legend
+- Steps are boxes; start steps (no dependencies) have a thicker border; terminal steps (no dependents) are light blue.
+- CPU-bound steps are filled gold.
+- Steps with compensation have dashed borders and an attached hexagon node connected via a dashed edge. When the compensation is declared externally, the hexagon is labeled "compensate (external)".
+- Edge arrows represent dependsOn relationships.
+
+ ## Best practices
 - Model clear, idempotent compensations per step; compensation is best‑effort and may be retried.
 - Set timeouts on remote calls; use bounded retries with modest backoff; consider jitter to avoid thundering herd.
 - Propagate correlation/user/tenant headers via HttpCall; avoid secrets in headers/logs.
