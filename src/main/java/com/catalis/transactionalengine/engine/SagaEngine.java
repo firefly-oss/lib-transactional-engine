@@ -40,8 +40,8 @@ import com.catalis.transactionalengine.tools.MethodRefs;
  */
 public class SagaEngine {
 
-    // Cache for parameter resolution strategies per method to avoid repeated annotation scans
-    private final Map<Method, ArgResolver[]> argResolverCache = new ConcurrentHashMap<>();
+    // Argument resolver helper (extracts parameter binding + caches strategies)
+    private final SagaArgumentResolver argumentResolver = new SagaArgumentResolver();
 
     public enum CompensationPolicy {
         STRICT_SEQUENTIAL,
@@ -50,6 +50,7 @@ public class SagaEngine {
         CIRCUIT_BREAKER,
         BEST_EFFORT_PARALLEL
     }
+
     private static final Logger log = LoggerFactory.getLogger(SagaEngine.class);
 
     private final SagaRegistry registry;
@@ -115,12 +116,12 @@ public class SagaEngine {
         events.onStart(sagaName, sagaId, ctx);
 
         // Build layers using indegree
-        List<List<String>> layers = buildLayers(saga);
+        List<List<String>> layers = SagaTopology.buildLayers(saga);
         if (log.isInfoEnabled()) {
             int stepsCount = saga.steps != null ? saga.steps.size() : 0;
             int layersCount = layers.size();
             String layerSizes = layers.stream().map(l -> Integer.toString(l.size())).collect(java.util.stream.Collectors.joining(","));
-            log.info(json(
+            log.info(SagaLogUtil.json(
                     "saga_lifecycle","start",
                     "saga", sagaName,
                     "sagaId", sagaId,
@@ -179,12 +180,12 @@ public class SagaEngine {
         events.onStart(sagaName, sagaId, ctx);
 
         // Build layers using indegree
-        List<List<String>> layers = buildLayers(saga);
+        List<List<String>> layers = SagaTopology.buildLayers(saga);
         if (log.isInfoEnabled()) {
             int stepsCount = saga.steps != null ? saga.steps.size() : 0;
             int layersCount = layers.size();
             String layerSizes = layers.stream().map(l -> Integer.toString(l.size())).collect(java.util.stream.Collectors.joining(","));
-            log.info(json(
+            log.info(SagaLogUtil.json(
                     "saga_lifecycle","start",
                     "saga", sagaName,
                     "sagaId", sagaId,
@@ -367,7 +368,7 @@ public class SagaEngine {
         events.onStart(sagaName, sagaId);
         events.onStart(sagaName, sagaId, finalCtx);
 
-        List<List<String>> layers = buildLayers(workSaga);
+        List<List<String>> layers = SagaTopology.buildLayers(workSaga);
         List<String> completionOrder = Collections.synchronizedList(new ArrayList<>());
         AtomicBoolean failed = new AtomicBoolean(false);
         Map<String, Throwable> stepErrors = new ConcurrentHashMap<>();
@@ -412,46 +413,6 @@ public class SagaEngine {
                 }));
     }
 
-    /**
-         * Build execution layers (topological levels) from the saga's step graph.
-         * Steps with indegree=0 form the first layer; removing them may unlock subsequent layers.
-         * No cycle detection here (validated in registry). Order inside a layer is not guaranteed.
-         */
-        private List<List<String>> buildLayers(SagaDefinition saga) {
-        // Use LinkedHashMap to preserve deterministic iteration order based on saga.steps insertion
-        Map<String, Integer> indegree = new LinkedHashMap<>();
-        Map<String, List<String>> adj = new LinkedHashMap<>();
-        for (String id : saga.steps.keySet()) {
-            indegree.putIfAbsent(id, 0);
-            adj.putIfAbsent(id, new ArrayList<>());
-        }
-        for (StepDefinition sd : saga.steps.values()) {
-            for (String dep : sd.dependsOn) {
-                indegree.put(sd.id, indegree.getOrDefault(sd.id, 0) + 1);
-                adj.get(dep).add(sd.id);
-            }
-        }
-        List<List<String>> layers = new ArrayList<>();
-        Queue<String> q = new ArrayDeque<>();
-        // Fill initial queue in the exact order of saga.steps keys for determinism
-        for (String id : saga.steps.keySet()) {
-            if (indegree.get(id) == 0) q.add(id);
-        }
-        while (!q.isEmpty()) {
-            int size = q.size();
-            List<String> layer = new ArrayList<>(size);
-            for (int i = 0; i < size; i++) {
-                String u = q.poll();
-                layer.add(u);
-                for (String v : adj.getOrDefault(u, List.of())) {
-                    indegree.put(v, indegree.get(v) - 1);
-                    if (indegree.get(v) == 0) q.add(v);
-                }
-            }
-            layers.add(layer);
-        }
-        return layers;
-    }
 
 /**
      * Execute a single step according to its configuration.
@@ -470,7 +431,7 @@ public class SagaEngine {
         // Idempotency within run
         if (sd.idempotencyKey != null && !sd.idempotencyKey.isEmpty()) {
             if (ctx.hasIdempotencyKey(sd.idempotencyKey)) {
-                log.info(json(
+                log.info(SagaLogUtil.json(
                                 "saga_step","skipped_idempotent",
                                 "saga", sagaName,
                                 "sagaId", ctx.correlationId(),
@@ -496,8 +457,8 @@ public class SagaEngine {
         if (log.isInfoEnabled()) {
             String mode = sd.handler != null ? "handler" : "method";
             String inputType = input != null ? input.getClass().getName() : "null";
-            String inputPreview = summarize(input, 200);
-            log.info(json(
+            String inputPreview = SagaLogUtil.summarize(input, 200);
+            log.info(SagaLogUtil.json(
                     "saga_step","exec_config",
                     "saga", sagaName,
                     "sagaId", ctx.correlationId(),
@@ -527,8 +488,8 @@ public class SagaEngine {
                 .doOnNext(res -> {
                     if (log.isInfoEnabled()) {
                         String resultType = res != null ? res.getClass().getName() : "null";
-                        String resultPreview = summarize(res, 200);
-                        log.info(json(
+                        String resultPreview = SagaLogUtil.summarize(res, 200);
+                        log.info(SagaLogUtil.json(
                                 "saga_step","result",
                                 "saga", sagaName,
                                 "sagaId", ctx.correlationId(),
@@ -562,8 +523,8 @@ public class SagaEngine {
                     ctx.setStatus(stepId, StepStatus.FAILED);
                     int attempts = ctx.getAttempts(stepId);
                     String errClass = err.getClass().getName();
-                    String errMsg = safeString(err.getMessage(), 500);
-                    log.warn(json(
+                    String errMsg = SagaLogUtil.safeString(err.getMessage(), 500);
+                    log.warn(SagaLogUtil.json(
                             "saga_step","error",
                             "saga", sagaName,
                             "sagaId", ctx.correlationId(),
@@ -616,52 +577,6 @@ public class SagaEngine {
         return Math.max(0L, v);
     }
 
-    private static String summarize(Object obj, int max) {
-        if (obj == null) return "null";
-        String s;
-        try { s = String.valueOf(obj); } catch (Throwable ignore) { s = obj.getClass().getName(); }
-        return safeString(s, max);
-    }
-
-    private static String safeString(String s, int max) {
-        if (s == null) return "";
-        if (s.length() <= max) return s;
-        return s.substring(0, Math.max(0, max)) + "...";
-    }
-
-    private static String json(String... kv) {
-        StringBuilder sb = new StringBuilder(256);
-        sb.append('{');
-        for (int i = 0; i + 1 < kv.length; i += 2) {
-            if (i > 0) sb.append(',');
-            sb.append('"').append(esc(kv[i])).append('"').append(':');
-            sb.append('"').append(esc(kv[i + 1] == null ? "" : kv[i + 1])).append('"');
-        }
-        sb.append('}');
-        return sb.toString();
-    }
-
-    private static String esc(String s) {
-        StringBuilder sb = new StringBuilder(s.length() + 16);
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"' -> sb.append("\\\"");
-                case '\\' -> sb.append("\\\\");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        sb.append(String.format("\\u%04x", (int) c));
-                    } else {
-                        sb.append(c);
-                    }
-                }
-            }
-        }
-        return sb.toString();
-    }
 
     /**
      * Optionally expand steps whose input was marked with ExpandEach at build time via StepInputs.
@@ -834,7 +749,7 @@ public class SagaEngine {
     @SuppressWarnings("unchecked")
     private Mono<Object> invokeMono(Object bean, Method method, Object input, SagaContext ctx) {
         try {
-            Object[] args = resolveArguments(method, input, ctx);
+            Object[] args = argumentResolver.resolveArguments(method, input, ctx);
             Object result = method.invoke(bean, args);
             if (result instanceof Mono<?> mono) {
                 return (Mono<Object>) mono;
@@ -850,7 +765,7 @@ public class SagaEngine {
     // Overload: use a separate method as annotation source while invoking another (proxy-safe) method
     private Mono<Object> invokeMono(Object bean, Method invocationMethod, Method annotationSource, Object input, SagaContext ctx) {
         try {
-            Object[] args = resolveArguments(annotationSource, input, ctx);
+            Object[] args = argumentResolver.resolveArguments(annotationSource, input, ctx);
             Object result = invocationMethod.invoke(bean, args);
             if (result instanceof Mono<?> mono) {
                 return (Mono<Object>) mono;
@@ -863,89 +778,6 @@ public class SagaEngine {
         }
     }
 
-    private Object[] resolveArguments(Method method, Object input, SagaContext ctx) {
-        ArgResolver[] resolvers = argResolverCache.computeIfAbsent(method, this::compileArgResolvers);
-        Object[] args = new Object[resolvers.length];
-        for (int i = 0; i < resolvers.length; i++) {
-            args[i] = resolvers[i].resolve(input, ctx);
-        }
-        return args;
-    }
-
-    private ArgResolver[] compileArgResolvers(Method method) {
-        var params = method.getParameters();
-        if (params.length == 0) return new ArgResolver[0];
-        ArgResolver[] resolvers = new ArgResolver[params.length];
-        boolean implicitUsed = false;
-        for (int i = 0; i < params.length; i++) {
-            var p = params[i];
-            Class<?> type = p.getType();
-
-            if (SagaContext.class.isAssignableFrom(type)) {
-                resolvers[i] = (in, c) -> c;
-                continue;
-            }
-
-            var inputAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Input.class);
-            if (inputAnn != null) {
-                String key = inputAnn.value();
-                if (key == null || key.isBlank()) {
-                    resolvers[i] = (in, c) -> in;
-                } else {
-                    resolvers[i] = (in, c) -> (in instanceof Map<?, ?> m) ? m.get(key) : null;
-                }
-                continue;
-            }
-
-            var fromStepAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.FromStep.class);
-            if (fromStepAnn != null) {
-                String ref = fromStepAnn.value();
-                resolvers[i] = (in, c) -> c.getResult(ref);
-                continue;
-            }
-
-            var headerAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Header.class);
-            if (headerAnn != null) {
-                String name = headerAnn.value();
-                resolvers[i] = (in, c) -> c.headers().get(name);
-                continue;
-            }
-
-            var headersAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Headers.class);
-            if (headersAnn != null) {
-                resolvers[i] = (in, c) -> c.headers();
-                continue;
-            }
-
-            var variableAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variable.class);
-            if (variableAnn != null) {
-                String name = variableAnn.value();
-                resolvers[i] = (in, c) -> c.getVariable(name);
-                continue;
-            }
-
-            var variablesAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variables.class);
-            if (variablesAnn != null) {
-                resolvers[i] = (in, c) -> c.variables();
-                continue;
-            }
-
-            if (!implicitUsed) {
-                resolvers[i] = (in, c) -> in;
-                implicitUsed = true;
-            } else {
-                String msg = "Unresolvable parameter '" + p.getName() + "' at position " + i +
-                        " in method " + method + ". Use @Input/@FromStep/@Header/@Headers/@Variable/@Variables or SagaContext.";
-                throw new IllegalStateException(msg);
-            }
-        }
-        return resolvers;
-    }
-
-    @FunctionalInterface
-    private interface ArgResolver {
-        Object resolve(Object input, SagaContext ctx);
-    }
 
 /**
      * Compensate previously completed steps in reverse completion order.
@@ -959,7 +791,7 @@ public class SagaEngine {
                                   SagaContext ctx) {
         if (log.isInfoEnabled()) {
             int completedCount = completionOrder != null ? completionOrder.size() : 0;
-            log.info(json(
+            log.info(SagaLogUtil.json(
                         "saga_compensation","start",
                         "saga", sagaName,
                         "sagaId", ctx.correlationId(),
@@ -994,7 +826,7 @@ public class SagaEngine {
                                                 Map<String, Object> stepInputs,
                                                 SagaContext ctx) {
         // Build layers and keep only steps that actually completed
-        List<List<String>> layers = buildLayers(saga);
+        List<List<String>> layers = SagaTopology.buildLayers(saga);
         Set<String> completed = new LinkedHashSet<>(completionOrder);
         List<List<String>> filtered = new ArrayList<>();
         for (List<String> layer : layers) {
