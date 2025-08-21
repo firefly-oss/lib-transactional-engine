@@ -397,6 +397,24 @@ SagaResult result = engine.execute("OrderSaga", inputs, ctx).block();
 Long orderId = result.resultOf("createOrder", Long.class).orElse(null);
 ```
 
+### 8.1) Inspecting results and compensations (new)
+- `SagaResult.steps()` always contains all declared steps in declaration order. Each step outcome includes status, attempts, latency, error, and whether it was compensated.
+- Compensation outputs and errors are recorded and exposed via `SagaResult.StepOutcome`.
+- Prefer `SagaReport` for convenient access to failed/compensated steps and compensation details.
+
+```java
+// Direct via SagaResult
+var out = result.steps().get("reserveFunds");
+boolean wasCompensated = out.compensated();
+Throwable compErr = out.compensationError();
+Object compRes = out.compensationResult();
+
+// Wrapped via SagaReport
+SagaReport report = SagaReport.from(result);
+List<String> failed = report.failedSteps();
+List<String> rolledBack = report.compensatedSteps();
+```
+
 Tip: `StepInputs` also supports lazy resolvers evaluated at execution time. See `StepInputs.Builder#forStepId(String, StepInputResolver)` if you want to derive inputs from headers/variables.
 
 ---

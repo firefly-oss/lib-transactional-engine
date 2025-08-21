@@ -6,6 +6,8 @@ If you are new to the project, start with the Tutorial, then explore the Archite
 
 ## Contents
 
+Note (new): SagaResult now includes compensation results and errors per step, and a new SagaReport class provides convenient access to step and compensation details. See Tutorial section "8.1) Inspecting results and compensations" and the Reference Card section "Results and reporting".
+
 - [TUTORIAL.md](TUTORIAL.md)
   - A step‑by‑step walkthrough that introduces the core concepts, shows how to declare and execute a Saga, and demonstrates parameter injection and compensation.
 

@@ -28,9 +28,10 @@ Quick navigation
 ## Core types (runtime)
 - `SagaEngine` — orchestrates execution by DAG layers; applies retry/backoff/timeout/idempotency; compensates on failure.
 - `SagaRegistry` — scans `@Saga` beans, indexes `@SagaStep` methods, validates DAG (no cycles, dependencies exist).
-- `SagaContext` — per-run state: correlationId, outbound headers, variables, per-step status/attempts/latency/results.
+- `SagaContext` — per-run state: correlationId, outbound headers, variables, per-step status/attempts/latency/results, plus compensation results and errors recorded during rollback.
 - `StepInputs` — builder for typed inputs (values or lazy resolvers evaluated against SagaContext at execution time).
-- `SagaResult` — immutable, typed access to per-step results and metadata after execution.
+- `SagaResult` — immutable, typed access to per-step results and metadata after execution. Always contains all declared steps; each `StepOutcome` includes compensationResult and compensationError fields.
+- `SagaReport` — convenience wrapper built from `SagaResult` with ergonomic accessors (failedSteps, compensatedSteps, per-step compensationError/Result, etc.).
 - `SagaEvents` — lifecycle callbacks (default: `SagaLoggerEvents` emits structured logs).
 - `StepLoggingAspect` — optional AOP logging of raw method invocation latency.
 - `HttpCall` — helper to propagate `X-Transactional-Id` and custom headers to WebClient.
@@ -156,6 +157,18 @@ StepInputs inputs = StepInputs.builder()
 
 SagaResult result = engine.execute("PaymentSaga", inputs, ctx).block();
 Long orderId = result.resultOf("createOrder", Long.class).orElse(null);
+```
+
+### Results and reporting (new)
+- `SagaResult.steps()` always contains all declared steps preserving saga declaration order. Each step outcome includes:
+  - `status`, `attempts`, `latencyMs`, `result`, `error`, `startedAt`, `compensated`, plus `compensationResult` and `compensationError`.
+- Build a `SagaReport` for convenient access:
+```java
+SagaReport report = SagaReport.from(result);
+List<String> failed = report.failedSteps();
+List<String> rolledBack = report.compensatedSteps();
+var reserve = report.steps().get("reserveFunds");
+boolean compensationOk = reserve.compensationError().isEmpty();
 ```
 
 ## Retry, backoff, timeout
