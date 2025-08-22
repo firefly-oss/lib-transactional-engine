@@ -1,6 +1,7 @@
 package com.catalis.transactionalengine.aws;
 
 import com.catalis.transactionalengine.observability.SagaEvents;
+import com.catalis.transactionalengine.util.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -40,7 +41,11 @@ public class AwsTransactionalEngineAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "transactional-engine.aws.dynamodb", name = "enabled", havingValue = "true", matchIfMissing = true)
     public DynamoDbAsyncClient dynamoDbAsyncClient() {
-        log.info("Creating DynamoDB async client for Transactional Engine");
+        log.info(JsonUtils.json(
+                "event", "creating_dynamodb_client",
+                "component", "aws_transactional_engine",
+                "client_type", "DynamoDbAsyncClient"
+        ));
         return DynamoDbAsyncClient.builder().build();
     }
 
@@ -51,7 +56,12 @@ public class AwsTransactionalEngineAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "transactional-engine.aws.cloudwatch", name = "enabled", havingValue = "true", matchIfMissing = false)
     public CloudWatchAsyncClient cloudWatchAsyncClient() {
-        log.info("Creating CloudWatch async client for Transactional Engine metrics");
+        log.info(JsonUtils.json(
+                "event", "creating_cloudwatch_client",
+                "component", "aws_transactional_engine",
+                "client_type", "CloudWatchAsyncClient",
+                "purpose", "saga_metrics"
+        ));
         return CloudWatchAsyncClient.builder().build();
     }
 
@@ -62,7 +72,12 @@ public class AwsTransactionalEngineAutoConfiguration {
     @ConditionalOnMissingBean  
     @ConditionalOnProperty(prefix = "transactional-engine.aws.kinesis", name = "enabled", havingValue = "true", matchIfMissing = false)
     public KinesisAsyncClient kinesisAsyncClient() {
-        log.info("Creating Kinesis async client for Transactional Engine step events");
+        log.info(JsonUtils.json(
+                "event", "creating_kinesis_client",
+                "component", "aws_transactional_engine",
+                "client_type", "KinesisAsyncClient",
+                "purpose", "step_events"
+        ));
         return KinesisAsyncClient.builder().build();
     }
 
@@ -75,7 +90,12 @@ public class AwsTransactionalEngineAutoConfiguration {
     @ConditionalOnProperty(prefix = "transactional-engine.aws.cloudwatch", name = "enabled", havingValue = "true")
     public SagaEvents cloudWatchSagaEvents(CloudWatchAsyncClient cloudWatchClient, 
                                          AwsTransactionalEngineProperties properties) {
-        log.info("Creating CloudWatch-based SagaEvents implementation");
+        log.info(JsonUtils.json(
+                "event", "creating_saga_events_implementation",
+                "component", "aws_transactional_engine",
+                "implementation_type", "CloudWatchSagaEvents",
+                "purpose", "cloudwatch_metrics"
+        ));
         return new CloudWatchSagaEvents(cloudWatchClient, properties.getCloudwatch());
     }
 
@@ -87,7 +107,12 @@ public class AwsTransactionalEngineAutoConfiguration {
     @ConditionalOnProperty(prefix = "transactional-engine.aws.kinesis", name = "enabled", havingValue = "true")
     public KinesisStepEventPublisher kinesisStepEventPublisher(KinesisAsyncClient kinesisClient,
                                                              AwsTransactionalEngineProperties properties) {
-        log.info("Creating Kinesis-based StepEventPublisher");
+        log.info(JsonUtils.json(
+                "event", "creating_step_event_publisher",
+                "component", "aws_transactional_engine",
+                "publisher_type", "KinesisStepEventPublisher",
+                "target", "kinesis_stream"
+        ));
         return new KinesisStepEventPublisher(kinesisClient, properties.getKinesis());
     }
 
@@ -100,7 +125,12 @@ public class AwsTransactionalEngineAutoConfiguration {
     @ConditionalOnClass(name = "io.awspring.cloud.sqs.operations.SqsTemplate")
     @ConditionalOnProperty(prefix = "transactional-engine.aws.sqs", name = "enabled", havingValue = "true")
     public SqsStepEventPublisher sqsStepEventPublisher(AwsTransactionalEngineProperties properties) {
-        log.info("Creating SQS-based StepEventPublisher");
+        log.info(JsonUtils.json(
+                "event", "creating_step_event_publisher",
+                "component", "aws_transactional_engine",
+                "publisher_type", "SqsStepEventPublisher",
+                "target", "sqs_queue"
+        ));
         return new SqsStepEventPublisher(properties.getSqs());
     }
 }

@@ -1,6 +1,7 @@
 package com.catalis.transactionalengine.aws;
 
 import com.catalis.transactionalengine.events.StepEventEnvelope;
+import com.catalis.transactionalengine.util.JsonUtils;
 import com.catalis.transactionalengine.events.StepEventPublisher;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -100,7 +101,11 @@ public class SqsStepEventPublisher implements StepEventPublisher {
                 // For now, we'll use reflection to avoid compile-time dependency
                 Class<?> sqsTemplateClass = Class.forName("io.awspring.cloud.sqs.operations.SqsTemplate");
                 sqsTemplate = applicationContext.getBean(sqsTemplateClass);
-                log.info("Found SqsTemplate in application context");
+                log.info(JsonUtils.json(
+                        "event", "sqs_template_found",
+                        "component", "SqsStepEventPublisher",
+                        "status", "found_in_application_context"
+                ));
             } catch (Exception e) {
                 log.warn("SqsTemplate not found in application context: {}", e.getMessage());
                 sqsTemplate = null;
@@ -283,7 +288,10 @@ public class SqsStepEventPublisher implements StepEventPublisher {
                 // For now, assume queue exists if template is available
                 return true;
             } catch (Exception e) {
-                log.error("Error checking queue status: {}", e.getMessage());
+                log.error(JsonUtils.json(
+                        "event", "queue_status_check_error",
+                        "error_message", e.getMessage() != null ? e.getMessage() : "Unknown queue status error"
+                ));
                 return false;
             }
         })
@@ -303,8 +311,11 @@ public class SqsStepEventPublisher implements StepEventPublisher {
                     return Mono.empty();
                 }
                 
-                log.info("SQS queue may not exist: {}", config.getQueueName());
-                log.info("Please ensure the queue is created through your infrastructure setup");
+                log.info(JsonUtils.json(
+                        "event", "sqs_queue_not_exist_warning",
+                        "queue_name", config.getQueueName(),
+                        "message", "Please ensure the queue is created through your infrastructure setup"
+                ));
                 return Mono.empty();
             });
     }
@@ -314,15 +325,22 @@ public class SqsStepEventPublisher implements StepEventPublisher {
      */
     public void setSqsTemplate(Object sqsTemplate) {
         this.sqsTemplate = sqsTemplate;
-        log.info("SqsTemplate set manually");
+        log.info(JsonUtils.json(
+                "event", "sqs_template_set_manually"
+        ));
     }
     
     public void shutdown() {
-        log.info("Shutting down SQS step event publisher...");
+        log.info(JsonUtils.json(
+                "event", "sqs_publisher_shutdown_start"
+        ));
         
         // Publish any remaining events
         if (!eventQueue.isEmpty()) {
-            log.info("Publishing {} remaining events before shutdown", eventQueue.size());
+            log.info(JsonUtils.json(
+                    "event", "publishing_remaining_events_before_shutdown",
+                    "remaining_events_count", Integer.toString(eventQueue.size())
+            ));
             publishBatch();
         }
         
@@ -331,7 +349,10 @@ public class SqsStepEventPublisher implements StepEventPublisher {
             try {
                 if (!scheduler.awaitTermination(10, TimeUnit.SECONDS)) {
                     scheduler.shutdownNow();
-                    log.warn("Forcibly shut down SQS publisher scheduler");
+                    log.warn(JsonUtils.json(
+                            "event", "sqs_scheduler_forcibly_shutdown",
+                            "message", "Forcibly shut down SQS publisher scheduler"
+                    ));
                 }
             } catch (InterruptedException e) {
                 scheduler.shutdownNow();
@@ -340,12 +361,17 @@ public class SqsStepEventPublisher implements StepEventPublisher {
         }
         
         PublishingStats finalStats = getStats();
-        log.info("SQS publisher shutdown complete. Final stats: {} published, {} failed, {} queued", 
-                finalStats.publishedEvents(), finalStats.failedEvents(), finalStats.queuedEvents());
+        log.info(JsonUtils.json(
+                "event", "sqs_publisher_shutdown_complete",
+                "published_events", Integer.toString(finalStats.publishedEvents()),
+                "failed_events", Integer.toString(finalStats.failedEvents()),
+                "queued_events", Integer.toString(finalStats.queuedEvents())
+        ));
     }
     
     // Helper records for results and stats
     private record PublishResult(int successfulMessages, int failedMessages) {}
     
     public record PublishingStats(int publishedEvents, int failedEvents, int queuedEvents) {}
+    
 }

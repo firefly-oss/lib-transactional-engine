@@ -1,6 +1,7 @@
 package com.catalis.transactionalengine.aws;
 
 import com.catalis.transactionalengine.events.StepEventEnvelope;
+import com.catalis.transactionalengine.util.JsonUtils;
 import com.catalis.transactionalengine.events.StepEventPublisher;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -63,7 +64,11 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
     public Mono<Void> publish(StepEventEnvelope envelope) {
         return Mono.fromRunnable(() -> {
             eventQueue.offer(envelope);
-            log.debug("Queued step event for publishing: {}.{}", envelope.sagaName, envelope.stepId);
+            log.debug(JsonUtils.json(
+                    "event", "step_event_queued",
+                    "saga_name", envelope.sagaName,
+                    "step_id", envelope.stepId
+            ));
         })
         .subscribeOn(Schedulers.boundedElastic())
         .then();
@@ -105,15 +110,24 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
                         publishedEvents.addAndGet(result.successfulRecords());
                         if (result.failedRecords() > 0) {
                             failedEvents.addAndGet(result.failedRecords());
-                            log.warn("Published batch with {} successful and {} failed records", 
-                                    result.successfulRecords(), result.failedRecords());
+                            log.warn(JsonUtils.json(
+                                    "event", "batch_published_with_failures",
+                                    "successful_records", Integer.toString(result.successfulRecords()),
+                                    "failed_records", Integer.toString(result.failedRecords())
+                            ));
                         } else {
-                            log.debug("Successfully published batch of {} step events", result.successfulRecords());
+                            log.debug(JsonUtils.json(
+                                    "event", "batch_published_successfully",
+                                    "step_events_count", Integer.toString(result.successfulRecords())
+                            ));
                         }
                     },
                     error -> {
                         failedEvents.addAndGet(batch.size());
-                        log.error("Failed to publish step event batch: {}", error.getMessage());
+                        log.error(JsonUtils.json(
+                                "event", "batch_publishing_failed",
+                                "error_message", error.getMessage() != null ? error.getMessage() : "Unknown error"
+                        ));
                         // Re-queue failed events for retry
                         batch.forEach(eventQueue::offer);
                     }
@@ -137,8 +151,12 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
                 records.add(record);
                 
             } catch (JsonProcessingException e) {
-                log.error("Failed to serialize step event for {}.{}: {}", 
-                        envelope.sagaName, envelope.stepId, e.getMessage());
+                log.error(JsonUtils.json(
+                        "event", "step_event_serialization_failed",
+                        "saga_name", envelope.sagaName,
+                        "step_id", envelope.stepId,
+                        "error_message", e.getMessage() != null ? e.getMessage() : "Unknown serialization error"
+                ));
                 // Skip this record and continue with others
             }
         }
@@ -158,15 +176,22 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
                 int successfulRecords = records.size() - failedRecords;
                 
                 if (failedRecords > 0) {
-                    log.warn("Kinesis put records had {} failures out of {} records", 
-                            failedRecords, records.size());
+                    log.warn(JsonUtils.json(
+                            "event", "kinesis_put_records_failures",
+                            "failed_records", Integer.toString(failedRecords),
+                            "total_records", Integer.toString(records.size())
+                    ));
                     
                     // Log details of failed records
                     for (int i = 0; i < response.records().size(); i++) {
                         PutRecordsResultEntry resultEntry = response.records().get(i);
                         if (resultEntry.errorCode() != null) {
-                            log.warn("Record {} failed with error: {} - {}", 
-                                    i, resultEntry.errorCode(), resultEntry.errorMessage());
+                            log.warn(JsonUtils.json(
+                                    "event", "kinesis_record_failed",
+                                    "record_index", Integer.toString(i),
+                                    "error_code", resultEntry.errorCode(),
+                                    "error_message", resultEntry.errorMessage() != null ? resultEntry.errorMessage() : "Unknown error"
+                            ));
                         }
                     }
                 }
@@ -175,14 +200,23 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
             })
             .onErrorResume(error -> {
                 if (error instanceof ProvisionedThroughputExceededException) {
-                    log.warn("Kinesis provisioned throughput exceeded, will retry");
+                    log.warn(JsonUtils.json(
+                            "event", "kinesis_throughput_exceeded",
+                            "message", "Kinesis provisioned throughput exceeded, will retry"
+                    ));
                     return Mono.delay(Duration.ofSeconds(1))
                             .then(publishBatchToKinesis(batch));
                 } else if (error instanceof ResourceNotFoundException) {
-                    log.error("Kinesis stream not found: {}", config.getStreamName());
+                    log.error(JsonUtils.json(
+                            "event", "kinesis_stream_not_found",
+                            "stream_name", config.getStreamName()
+                    ));
                     return Mono.just(new PublishResult(0, batch.size()));
                 } else {
-                    log.error("Unexpected error publishing to Kinesis: {}", error.getMessage());
+                    log.error(JsonUtils.json(
+                            "event", "kinesis_publish_error",
+                            "error_message", error.getMessage() != null ? error.getMessage() : "Unknown Kinesis error"
+                    ));
                     return Mono.just(new PublishResult(0, batch.size()));
                 }
             });
@@ -240,11 +274,17 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
         return Mono.fromFuture(kinesisClient.describeStream(request))
             .map(response -> response.streamDescription().streamStatus() == StreamStatus.ACTIVE)
             .onErrorResume(ResourceNotFoundException.class, error -> {
-                log.warn("Kinesis stream not found: {}", config.getStreamName());
+                log.warn(JsonUtils.json(
+                        "event", "kinesis_stream_not_found_check",
+                        "stream_name", config.getStreamName()
+                ));
                 return Mono.just(false);
             })
             .onErrorResume(error -> {
-                log.error("Error checking stream status: {}", error.getMessage());
+                log.error(JsonUtils.json(
+                        "event", "stream_status_check_error",
+                        "error_message", error.getMessage() != null ? error.getMessage() : "Unknown stream status error"
+                ));
                 return Mono.just(false);
             });
     }
@@ -261,7 +301,10 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
                     return Mono.empty();
                 }
                 
-                log.info("Creating Kinesis stream: {}", config.getStreamName());
+                log.info(JsonUtils.json(
+                        "event", "creating_kinesis_stream",
+                        "stream_name", config.getStreamName()
+                ));
                 CreateStreamRequest createRequest = CreateStreamRequest.builder()
                     .streamName(config.getStreamName())
                     .shardCount(shardCount)
@@ -269,7 +312,10 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
                 
                 return Mono.fromFuture(kinesisClient.createStream(createRequest))
                     .then(waitForStreamToBeActive())
-                    .doOnSuccess(v -> log.info("Kinesis stream created: {}", config.getStreamName()));
+                    .doOnSuccess(v -> log.info(JsonUtils.json(
+                            "event", "kinesis_stream_created",
+                            "stream_name", config.getStreamName()
+                    )));
             });
     }
     
@@ -282,17 +328,25 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
             .then()
             .timeout(Duration.ofMinutes(5))
             .onErrorResume(error -> {
-                log.error("Timeout waiting for stream to become active: {}", error.getMessage());
+                log.error(JsonUtils.json(
+                        "event", "stream_activation_timeout",
+                        "error_message", error.getMessage() != null ? error.getMessage() : "Timeout waiting for stream to become active"
+                ));
                 return Mono.empty();
             });
     }
     
     public void shutdown() {
-        log.info("Shutting down Kinesis step event publisher...");
+        log.info(JsonUtils.json(
+                "event", "kinesis_publisher_shutdown_start"
+        ));
         
         // Publish any remaining events
         if (!eventQueue.isEmpty()) {
-            log.info("Publishing {} remaining events before shutdown", eventQueue.size());
+            log.info(JsonUtils.json(
+                    "event", "publishing_remaining_events_before_shutdown",
+                    "remaining_events_count", Integer.toString(eventQueue.size())
+            ));
             publishBatch();
         }
         
@@ -301,7 +355,10 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
             try {
                 if (!scheduler.awaitTermination(10, TimeUnit.SECONDS)) {
                     scheduler.shutdownNow();
-                    log.warn("Forcibly shut down Kinesis publisher scheduler");
+                    log.warn(JsonUtils.json(
+                            "event", "kinesis_scheduler_forcibly_shutdown",
+                            "message", "Forcibly shut down Kinesis publisher scheduler"
+                    ));
                 }
             } catch (InterruptedException e) {
                 scheduler.shutdownNow();
@@ -310,8 +367,12 @@ public class KinesisStepEventPublisher implements StepEventPublisher {
         }
         
         PublishingStats finalStats = getStats();
-        log.info("Kinesis publisher shutdown complete. Final stats: {} published, {} failed, {} queued", 
-                finalStats.publishedEvents(), finalStats.failedEvents(), finalStats.queuedEvents());
+        log.info(JsonUtils.json(
+                "event", "kinesis_publisher_shutdown_complete",
+                "published_events", Integer.toString(finalStats.publishedEvents()),
+                "failed_events", Integer.toString(finalStats.failedEvents()),
+                "queued_events", Integer.toString(finalStats.queuedEvents())
+        ));
     }
     
     // Helper records for results and stats
