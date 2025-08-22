@@ -2,7 +2,7 @@
 
 A practical, opinionated guide to building sagas programmatically (without annotations). Use the programmatic approach when you need dynamic DAGs at runtime, want to assemble workflows outside of Spring components, or prefer functional handlers over annotated methods.
 
-What you will learn
+## What you will learn
 - When to choose the programmatic API over the DSL
 - How to build a SagaDefinition step by step
 - How to wire dependencies, timeouts, retries, and compensations
@@ -12,7 +12,24 @@ What you will learn
 
 ---
 
-1) When to choose the programmatic way
+Table of contents
+- [1. When to choose the programmatic way](#1-when-to-choose-the-programmatic-way)
+- [2. The essentials: SagaDefinition and handlers](#2-the-essentials-sagadefinition-and-handlers)
+- [3. Wiring dependencies and layers](#3-wiring-dependencies-and-layers)
+- [4. Configure resilience per step (work + compensation)](#4-configure-resilience-per-step-work--compensation)
+- [5. Executing with StepInputs and reading results](#5-executing-with-stepinputs-and-reading-results)
+- [6. Dynamic graphs at runtime](#6-dynamic-graphs-at-runtime)
+  - [6.1 Build steps from data](#61-build-steps-from-data)
+  - [6.2 Per-item expansion of a single step](#62-per-item-expansion-of-a-single-step)
+  - [6.3 Conditional steps](#63-conditional-steps)
+- [7. Common programmatic patterns](#7-common-programmatic-patterns)
+- [8. Observability and testing](#8-observability-and-testing)
+- [9. Migration and anti-patterns](#9-migration-and-anti-patterns)
+- [10. Checklist](#10-checklist)
+
+---
+
+## 1. When to choose the programmatic way
 - Dynamic graphs: steps depend on user input, configuration, or data fetched at runtime.
 - Outside Spring: build workflows in libraries or utilities without Spring annotations.
 - Code‑generated workflows: construct sagas from metadata, OpenAPI specs, or templates.
@@ -23,7 +40,7 @@ If your saga is static and lives in a Spring component, the annotated DSL is con
 
 ---
 
-2) The essentials: SagaDefinition and handlers
+## 2. The essentials: SagaDefinition and handlers
 - SagaDefinition: an immutable description of the DAG (steps, dependencies, config).
 - SagaBuilder: a fluent builder to assemble SagaDefinition.
 - StepHandler<I, O>: a functional interface for step implementations. Handlers receive (input, SagaContext) and return Mono<O> (or Mono<Void> for void steps).
@@ -60,7 +77,7 @@ Notes
 
 ---
 
-3) Wiring dependencies and layers
+## 3. Wiring dependencies and layers
 - dependsOn: declare upstream steps that must complete before the current step runs.
 - Start steps: steps with no dependencies.
 - Terminal steps: steps with no dependents; often where you read outcomes.
