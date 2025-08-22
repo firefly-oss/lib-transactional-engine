@@ -91,6 +91,17 @@ public class SagaGraphGenerator {
                 System.err.println("[SagaGraph] WARN: No sagas found under packages: " + basePackages);
             }
 
+            // If verbose, print computed DAG execution layers per saga
+            if (verbose) {
+                for (SagaDefinition saga : sagas) {
+                    var layers = com.catalis.transactionalengine.engine.SagaTopology.buildLayers(saga);
+                    System.err.println("[SagaGraph] DAG layers for saga '" + saga.name + "':");
+                    for (int i = 0; i < layers.size(); i++) {
+                        System.err.println("  L" + (i+1) + ": " + layers.get(i));
+                    }
+                }
+            }
+
             String dot = buildDot(sagas);
             writeString(output, dot);
             if (verbose) System.err.println("[SagaGraph] Wrote DOT to: " + output);
