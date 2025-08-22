@@ -9,7 +9,7 @@ The Transactional Engine is a modern, annotation-driven framework that simplifie
 - **Saga Pattern Implementation**: Orchestrate complex distributed transactions with automatic compensation
 - **Reactive Programming**: Built on Project Reactor for non-blocking, scalable operations
 - **Rich DSL**: Annotation-based configuration with programmatic alternatives
-- **AWS Integration**: Native support for CloudWatch, Kinesis, SQS, and DynamoDB
+- **Cloud Integration**: Native support for AWS (CloudWatch, Kinesis, SQS, DynamoDB) and Azure (Application Insights, Event Hubs, Service Bus, Cosmos DB)
 - **Comprehensive Observability**: Built-in metrics, logging, and event publishing
 - **Production Ready**: Optimizations, resilience patterns, and monitoring capabilities
 
