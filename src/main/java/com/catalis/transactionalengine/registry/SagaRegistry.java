@@ -264,67 +264,147 @@ public class SagaRegistry {
     @SuppressWarnings("unchecked")
     private void validateParameters(SagaDefinition saga) {
         for (StepDefinition sd : saga.steps.values()) {
-            // Validate against the original target method to preserve parameter annotations (proxy methods may not carry them)
-            var method = sd.stepMethod;
-            int implicitInputs = 0;
-            var params = method.getParameters();
-            for (int i = 0; i < params.length; i++) {
-                var p = params[i];
-                Class<?> type = p.getType();
+            // Validate step method parameters
+            if (sd.stepMethod != null) validateOneMethodParams(saga, sd, sd.stepMethod, false);
+            // Validate compensation method parameters (if present)
+            if (sd.compensateMethod != null) validateOneMethodParams(saga, sd, sd.compensateMethod, true);
+        }
+    }
 
-                // Type-based resolvable: SagaContext
-                if (com.catalis.transactionalengine.core.SagaContext.class.isAssignableFrom(type)) {
-                    continue;
-                }
+    private void validateOneMethodParams(SagaDefinition saga, StepDefinition sd, Method method, boolean compensation) {
+        int implicitInputs = 0;
+        var params = method.getParameters();
+        for (int i = 0; i < params.length; i++) {
+            var p = params[i];
+            Class<?> type = p.getType();
 
-                // Known annotations
-                var in = p.getAnnotation(com.catalis.transactionalengine.annotations.Input.class);
-                if (in != null) {
-                    // no extra validation (keyed input may or may not exist at runtime)
-                    continue;
-                }
-                var fs = p.getAnnotation(com.catalis.transactionalengine.annotations.FromStep.class);
-                if (fs != null) {
-                    String ref = fs.value();
-                    if (!saga.steps.containsKey(ref)) {
-                        throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " references missing step '" + ref + "'");
-                    }
-                    continue;
-                }
-                var h = p.getAnnotation(com.catalis.transactionalengine.annotations.Header.class);
-                if (h != null) {
-                    // Ensure we can pass a String to this parameter
-                    if (!type.isAssignableFrom(String.class)) {
-                        throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @Header expects type assignable from String but was " + type.getName());
-                    }
-                    continue;
-                }
-                var hs = p.getAnnotation(com.catalis.transactionalengine.annotations.Headers.class);
-                if (hs != null) {
-                    if (!java.util.Map.class.isAssignableFrom(type)) {
-                        throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @Headers expects a Map type but was " + type.getName());
-                    }
-                    continue;
-                }
-                var varAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variable.class);
-                if (varAnn != null) {
-                    // no static type validation; runtime variable value must be assignable to the parameter type
-                    continue;
-                }
-                var varsAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variables.class);
-                if (varsAnn != null) {
-                    if (!java.util.Map.class.isAssignableFrom(type)) {
-                        throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @Variables expects a Map type but was " + type.getName());
-                    }
-                    continue;
-                }
+            // Type-based resolvable: SagaContext
+            if (com.catalis.transactionalengine.core.SagaContext.class.isAssignableFrom(type)) {
+                continue;
+            }
 
-                // Unannotated and not SagaContext -> implicit input
-                implicitInputs++;
-                if (implicitInputs > 1) {
-                    throw new IllegalStateException("Step '" + sd.id + "' has more than one unannotated parameter; annotate with @Input/@FromStep/@Header/@Headers/@Variable/@Variables or use SagaContext");
+            // Known annotations
+            var in = p.getAnnotation(com.catalis.transactionalengine.annotations.Input.class);
+            if (in != null) {
+                // no extra validation (keyed input may or may not exist at runtime)
+                continue;
+            }
+            var fs = p.getAnnotation(com.catalis.transactionalengine.annotations.FromStep.class);
+            if (fs != null) {
+                String ref = fs.value();
+                if (!saga.steps.containsKey(ref)) {
+                    throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " references missing step '" + ref + "'");
                 }
+                // Enhanced type validation: ensure parameter type is compatible with producer's result type when known
+                StepDefinition prod = saga.steps.get(ref);
+                if (!compensation && prod != null && prod.stepMethod != null) {
+                    Class<?> produced = inferProducedClass(prod.stepMethod);
+                    if (produced != Object.class && produced != Void.class) {
+                        Class<?> paramType = wrapIfPrimitive(type);
+                        Class<?> producedType = wrapIfPrimitive(produced);
+                        if (!paramType.isAssignableFrom(producedType)) {
+                            throw new IllegalStateException(
+                                    "@FromStep type mismatch: step '" + sd.id + "' parameter #" + i +
+                                            " expects " + paramType.getName() +
+                                            " but referenced step '" + ref + "' produces " + producedType.getName());
+                        }
+                    }
+                }
+                continue;
+            }
+            var fcr = p.getAnnotation(com.catalis.transactionalengine.annotations.FromCompensationResult.class);
+            if (fcr != null) {
+                String ref = fcr.value();
+                if (!saga.steps.containsKey(ref)) {
+                    throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " references missing compensation step '" + ref + "'");
+                }
+                // Do not perform strict type validation as compensation outputs may vary (handler or void).
+                continue;
+            }
+            var fce = p.getAnnotation(com.catalis.transactionalengine.annotations.CompensationError.class);
+            if (fce != null) {
+                String ref = fce.value();
+                if (!saga.steps.containsKey(ref)) {
+                    throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " references missing compensation step '" + ref + "'");
+                }
+                // Validate assignability if a non-Object type is declared
+                if (!Throwable.class.isAssignableFrom(type)) {
+                    throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @CompensationError expects a Throwable-compatible type but was " + type.getName());
+                }
+                continue;
+            }
+            var h = p.getAnnotation(com.catalis.transactionalengine.annotations.Header.class);
+            if (h != null) {
+                // Ensure we can pass a String to this parameter
+                if (!type.isAssignableFrom(String.class)) {
+                    throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @Header expects type assignable from String but was " + type.getName());
+                }
+                continue;
+            }
+            var hs = p.getAnnotation(com.catalis.transactionalengine.annotations.Headers.class);
+            if (hs != null) {
+                if (!java.util.Map.class.isAssignableFrom(type)) {
+                    throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @Headers expects a Map type but was " + type.getName());
+                }
+                continue;
+            }
+            var varAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variable.class);
+            if (varAnn != null) {
+                // no static type validation; runtime variable value must be assignable to the parameter type
+                continue;
+            }
+            var varsAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variables.class);
+            if (varsAnn != null) {
+                if (!java.util.Map.class.isAssignableFrom(type)) {
+                    throw new IllegalStateException("Step '" + sd.id + "' parameter #" + i + " @Variables expects a Map type but was " + type.getName());
+                }
+                continue;
+            }
+
+            // Unannotated and not SagaContext -> implicit input
+            implicitInputs++;
+            if (implicitInputs > 1) {
+                throw new IllegalStateException("Step '" + sd.id + "' has more than one unannotated parameter; annotate with @Input/@FromStep/@Header/@Headers/@Variable/@Variables or use SagaContext");
             }
         }
+    }
+
+    // --- Helpers for @FromStep type inference ---
+    private static Class<?> inferProducedClass(Method method) {
+        if (method == null) return Object.class;
+        Class<?> rt = method.getReturnType();
+        if (rt == Void.TYPE || rt == Void.class) return Void.class;
+        // If returns Mono<T>, try to extract T
+        if (reactor.core.publisher.Mono.class.isAssignableFrom(rt)) {
+            try {
+                java.lang.reflect.Type g = method.getGenericReturnType();
+                if (g instanceof java.lang.reflect.ParameterizedType pt) {
+                    java.lang.reflect.Type arg = pt.getActualTypeArguments()[0];
+                    if (arg instanceof Class<?> c) {
+                        return c;
+                    }
+                    // If wildcard or parameterized type, we cannot know statically
+                    return Object.class;
+                }
+                return Object.class;
+            } catch (Throwable ignored) {
+                return Object.class;
+            }
+        }
+        return wrapIfPrimitive(rt);
+    }
+
+    private static Class<?> wrapIfPrimitive(Class<?> c) {
+        if (!c.isPrimitive()) return c;
+        if (c == int.class) return Integer.class;
+        if (c == long.class) return Long.class;
+        if (c == boolean.class) return Boolean.class;
+        if (c == double.class) return Double.class;
+        if (c == float.class) return Float.class;
+        if (c == char.class) return Character.class;
+        if (c == byte.class) return Byte.class;
+        if (c == short.class) return Short.class;
+        if (c == void.class) return Void.class;
+        return c;
     }
 }

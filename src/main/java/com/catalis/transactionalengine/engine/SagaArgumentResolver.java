@@ -12,6 +12,25 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 final class SagaArgumentResolver {
 
+    @FunctionalInterface
+    private interface ArgResolver {
+        Object resolve(Object input, SagaContext ctx);
+    }
+
+    private ArgResolver wrapRequired(java.lang.reflect.Parameter p, Method method, ArgResolver base) {
+        var req = p.getAnnotation(com.catalis.transactionalengine.annotations.Required.class);
+        if (req == null) return base;
+        String paramName = p.getName();
+        int index = -1; // we don't have direct index here; name and method should suffice
+        return (in, c) -> {
+            Object v = base.resolve(in, c);
+            if (v == null) {
+                throw new IllegalStateException("Required parameter '" + paramName + "' in method " + method + " resolved to null");
+            }
+            return v;
+        };
+    }
+
     private final Map<Method, ArgResolver[]> argResolverCache = new ConcurrentHashMap<>();
 
     Object[] resolveArguments(Method method, Object input, SagaContext ctx) {
@@ -33,7 +52,7 @@ final class SagaArgumentResolver {
             Class<?> type = p.getType();
 
             if (SagaContext.class.isAssignableFrom(type)) {
-                resolvers[i] = (in, c) -> c;
+                resolvers[i] = wrapRequired(p, method, (in, c) -> c);
                 continue;
             }
 
@@ -41,9 +60,9 @@ final class SagaArgumentResolver {
             if (inputAnn != null) {
                 String key = inputAnn.value();
                 if (key == null || key.isBlank()) {
-                    resolvers[i] = (in, c) -> in;
+                    resolvers[i] = wrapRequired(p, method, (in, c) -> in);
                 } else {
-                    resolvers[i] = (in, c) -> (in instanceof Map<?, ?> m) ? m.get(key) : null;
+                    resolvers[i] = wrapRequired(p, method, (in, c) -> (in instanceof Map<?, ?> m) ? m.get(key) : null);
                 }
                 continue;
             }
@@ -51,50 +70,60 @@ final class SagaArgumentResolver {
             var fromStepAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.FromStep.class);
             if (fromStepAnn != null) {
                 String ref = fromStepAnn.value();
-                resolvers[i] = (in, c) -> c.getResult(ref);
+                resolvers[i] = wrapRequired(p, method, (in, c) -> c.getResult(ref));
+                continue;
+            }
+
+            var fromCompResAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.FromCompensationResult.class);
+            if (fromCompResAnn != null) {
+                String ref = fromCompResAnn.value();
+                resolvers[i] = wrapRequired(p, method, (in, c) -> c.getCompensationResult(ref));
+                continue;
+            }
+
+            var compErrAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.CompensationError.class);
+            if (compErrAnn != null) {
+                String ref = compErrAnn.value();
+                resolvers[i] = wrapRequired(p, method, (in, c) -> c.getCompensationError(ref));
                 continue;
             }
 
             var headerAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Header.class);
             if (headerAnn != null) {
                 String name = headerAnn.value();
-                resolvers[i] = (in, c) -> c.headers().get(name);
+                resolvers[i] = wrapRequired(p, method, (in, c) -> c.headers().get(name));
                 continue;
             }
 
             var headersAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Headers.class);
             if (headersAnn != null) {
-                resolvers[i] = (in, c) -> c.headers();
+                resolvers[i] = wrapRequired(p, method, (in, c) -> c.headers());
                 continue;
             }
 
             var variableAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variable.class);
             if (variableAnn != null) {
                 String name = variableAnn.value();
-                resolvers[i] = (in, c) -> c.getVariable(name);
+                resolvers[i] = wrapRequired(p, method, (in, c) -> c.getVariable(name));
                 continue;
             }
 
             var variablesAnn = p.getAnnotation(com.catalis.transactionalengine.annotations.Variables.class);
             if (variablesAnn != null) {
-                resolvers[i] = (in, c) -> c.variables();
+                resolvers[i] = wrapRequired(p, method, (in, c) -> c.variables());
                 continue;
             }
 
             if (!implicitUsed) {
-                resolvers[i] = (in, c) -> in;
+                resolvers[i] = wrapRequired(p, method, (in, c) -> in);
                 implicitUsed = true;
             } else {
                 String msg = "Unresolvable parameter '" + p.getName() + "' at position " + i +
-                        " in method " + method + ". Use @Input/@FromStep/@Header/@Headers/@Variable/@Variables or SagaContext.";
+                        " in method " + method + ". Use @Input/@FromStep/@FromCompensationResult/@CompensationError/@Header/@Headers/@Variable/@Variables or SagaContext.";
                 throw new IllegalStateException(msg);
             }
         }
         return resolvers;
     }
 
-    @FunctionalInterface
-    private interface ArgResolver {
-        Object resolve(Object input, SagaContext ctx);
-    }
 }

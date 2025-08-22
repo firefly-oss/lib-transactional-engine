@@ -104,7 +104,7 @@ final class SagaCompensator {
         if (comp == null) return Mono.empty();
         Object arg = resolveCompensationArg(comp, stepInputs.get(stepId), ctx.getResult(stepId));
         Object targetBean = sd.compensateBean != null ? sd.compensateBean : saga.bean;
-        return invoker.invokeMono(targetBean, comp, arg, ctx)
+        return invoker.invokeMono(targetBean, comp, sd.compensateMethod != null ? sd.compensateMethod : comp, arg, ctx)
                 .doOnNext(obj -> ctx.putCompensationResult(stepId, obj))
                 .doOnSuccess(v -> {
                     ctx.setStatus(stepId, StepStatus.COMPENSATED);
@@ -160,7 +160,7 @@ final class SagaCompensator {
         } else {
             Object arg = resolveCompensationArg(comp, stepInputs.get(stepId), ctx.getResult(stepId));
             Object targetBean = sd.compensateBean != null ? sd.compensateBean : saga.bean;
-            call = invoker.attemptCall(targetBean, comp, comp, arg, ctx, p.timeoutMs, p.retry, p.backoffMs, p.jitter, p.jitterFactor, stepId);
+            call = invoker.attemptCall(targetBean, comp, sd.compensateMethod != null ? sd.compensateMethod : comp, arg, ctx, p.timeoutMs, p.retry, p.backoffMs, p.jitter, p.jitterFactor, stepId);
         }
         return call
                 .doOnNext(v -> ctx.putCompensationResult(stepId, v))

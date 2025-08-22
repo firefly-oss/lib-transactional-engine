@@ -75,7 +75,7 @@ final class StepInvoker {
 
     // Overload for separate annotation source
     @SuppressWarnings("unchecked")
-    private Mono<Object> invokeMono(Object bean, Method invocationMethod, Method annotationSource, Object input, SagaContext ctx) {
+    public Mono<Object> invokeMono(Object bean, Method invocationMethod, Method annotationSource, Object input, SagaContext ctx) {
         try {
             Object[] args = argumentResolver.resolveArguments(annotationSource, input, ctx);
             Object result = invocationMethod.invoke(bean, args);
