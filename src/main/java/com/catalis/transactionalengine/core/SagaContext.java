@@ -36,6 +36,10 @@ public class SagaContext {
     private final Set<String> idempotencyKeys = ConcurrentHashMap.newKeySet();
     private final Instant startedAt = Instant.now();
 
+    // Topology snapshot for this execution (set by the engine before starting steps)
+    private volatile java.util.List<java.util.List<String>> topologyLayers;
+    private final Map<String, java.util.List<String>> stepDependencies = new ConcurrentHashMap<>();
+
     public SagaContext() {
         this(UUID.randomUUID().toString());
     }
@@ -205,5 +209,34 @@ public class SagaContext {
 
     public Map<String, Throwable> compensationErrorsView() {
         return Collections.unmodifiableMap(compensationErrors);
+    }
+
+    // Topology accessors
+    /**
+     * Set the execution layers (topological levels) for this run.
+     * Intended to be set by the engine prior to step execution.
+     */
+    public void setTopologyLayers(java.util.List<java.util.List<String>> layers) {
+        this.topologyLayers = layers;
+    }
+
+    /** Returns the execution layers for this run (may be null if not set). */
+    public java.util.List<java.util.List<String>> topologyLayersView() {
+        return topologyLayers == null ? java.util.List.of() : java.util.Collections.unmodifiableList(topologyLayers);
+    }
+
+    /** Replace the per-step dependency mapping (stepId -> dependsOn list). */
+    public void setStepDependencies(Map<String, java.util.List<String>> deps) {
+        stepDependencies.clear();
+        if (deps != null) {
+            for (Map.Entry<String, java.util.List<String>> e : deps.entrySet()) {
+                stepDependencies.put(e.getKey(), java.util.List.copyOf(e.getValue()));
+            }
+        }
+    }
+
+    /** View of per-step dependencies (stepId -> dependsOn list). */
+    public Map<String, java.util.List<String>> stepDependenciesView() {
+        return java.util.Collections.unmodifiableMap(stepDependencies);
     }
 }
