@@ -245,7 +245,12 @@ public class SagaEngine {
                                             sd.stepEvent.key,
                                             payload,
                                             java.util.Map.copyOf(finalCtx.headers()),
-                                            java.time.Instant.now()
+                                            java.time.Instant.now(),
+                                            finalCtx.getAttempts(stepId),
+                                            finalCtx.getLatency(stepId),
+                                            finalCtx.getStepStartedAt(stepId),
+                                            java.time.Instant.now(),
+                                            (payload != null ? payload.getClass().getName() : null)
                                     );
                                     return stepEventPublisher.publish(env);
                                 })
