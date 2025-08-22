@@ -42,7 +42,7 @@ Spring Boot auto-configuration for Azure services:
 
 ### In-Memory Starter (`lib-transactional-engine-inmemory-starter`)
 Vanilla Spring Boot implementation for development and small-scale deployments:
-- Enhanced logging with emoji icons for better visibility
+- Structured JSON logging for production-ready observability
 - In-memory event storage for debugging
 - Configurable logging levels (step details, timing, compensation)
 - No external dependencies - perfect for getting started
