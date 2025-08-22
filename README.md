@@ -17,11 +17,12 @@ The Transactional Engine is a modern, annotation-driven framework that simplifie
 
 ### Core Module (`lib-transactional-engine-core`)
 The foundation library providing:
-- Saga execution engine
-- Annotation-based DSL
-- Step orchestration and compensation
-- Event publishing framework
-- Observability and monitoring
+- Saga execution engine with reactive stream optimizations
+- Annotation-based DSL with enhanced step execution context
+- Step orchestration and compensation with improved error handling
+- Event publishing framework with structured logging
+- Enhanced observability with JsonUtils for consistent serialization
+- StepLoggingAspect with production-ready structured logging
 - Redis, ActiveMQ, and RabbitMQ integrations
 
 ### AWS Starter (`lib-transactional-engine-aws-starter`)
@@ -34,11 +35,12 @@ Spring Boot auto-configuration for AWS services:
 
 ### Azure Starter (`lib-transactional-engine-azure-starter`)
 Spring Boot auto-configuration for Azure services:
-- Application Insights metrics and logging
-- Event Hubs event streaming
-- Service Bus message publishing
-- Cosmos DB persistence support
-- Auto-configuration with sensible defaults
+- ApplicationInsightsSagaEvents for comprehensive telemetry and observability
+- Event Hubs event streaming for high-throughput step events
+- Service Bus message publishing for reliable saga coordination
+- Cosmos DB persistence support for globally distributed saga state
+- Auto-configuration with sensible defaults and conditional bean creation
+- Production-ready structured JSON logging with Azure integration
 
 ### In-Memory Starter (`lib-transactional-engine-inmemory-starter`)
 Vanilla Spring Boot implementation for development and small-scale deployments:
@@ -237,8 +239,8 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 ## 🆘 Support
 
 - **Documentation**: [Full documentation](docs/)
-- **Issues**: [GitHub Issues](https://github.com/catalis/lib-transactional-engine/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/catalis/lib-transactional-engine/discussions)
+- **Issues**: [GitHub Issues](https://github.com/firefly-oss/lib-transactional-engine/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/firefly-oss/lib-transactional-engine/discussions)
 
 ---
 
