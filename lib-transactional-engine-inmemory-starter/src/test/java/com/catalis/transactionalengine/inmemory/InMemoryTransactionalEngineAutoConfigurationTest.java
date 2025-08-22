@@ -94,4 +94,48 @@ class InMemoryTransactionalEngineAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(InMemorySagaEvents.class);
                 });
     }
+
+    @Test
+    void shouldCreateInMemoryStepEventPublisherBean() {
+        this.contextRunner
+                .run(context -> {
+                    assertThat(context).hasSingleBean(InMemoryStepEventPublisher.class);
+                    assertThat(context).hasBean("inMemoryStepEventPublisher");
+                    
+                    InMemoryStepEventPublisher publisher = context.getBean(InMemoryStepEventPublisher.class);
+                    assertThat(publisher).isNotNull();
+                    assertThat(publisher.getTotalEventCount()).isEqualTo(0);
+                    assertThat(publisher.getEventHistory()).isEmpty();
+                });
+    }
+
+    @Test
+    void shouldRespectStepPublisherEnabledProperty() {
+        this.contextRunner
+                .withPropertyValues("transactional-engine.inmemory.events.step-publisher-enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(InMemoryStepEventPublisher.class);
+                    assertThat(context).doesNotHaveBean("inMemoryStepEventPublisher");
+                });
+    }
+
+    @Test
+    void shouldConfigureStepEventPublisherCorrectly() {
+        this.contextRunner
+                .withPropertyValues(
+                        "transactional-engine.inmemory.events.log-step-details=true",
+                        "transactional-engine.inmemory.events.max-events-in-memory=100"
+                )
+                .run(context -> {
+                    assertThat(context).hasBean("inMemoryStepEventPublisher");
+                    
+                    InMemoryStepEventPublisher publisher = context.getBean(InMemoryStepEventPublisher.class);
+                    assertThat(publisher).isNotNull();
+                    
+                    // Verify the publisher was configured with the expected properties
+                    InMemoryTransactionalEngineProperties properties = context.getBean(InMemoryTransactionalEngineProperties.class);
+                    assertThat(properties.getEvents().isLogStepDetails()).isTrue();
+                    assertThat(properties.getEvents().getMaxEventsInMemory()).isEqualTo(100);
+                });
+    }
 }

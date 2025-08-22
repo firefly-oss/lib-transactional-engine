@@ -1,6 +1,7 @@
 package com.catalis.transactionalengine.inmemory;
 
 import com.catalis.transactionalengine.observability.SagaEvents;
+import com.catalis.transactionalengine.util.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -54,12 +55,18 @@ public class InMemoryTransactionalEngineAutoConfiguration {
     @ConditionalOnMissingBean(SagaEvents.class)
     @ConditionalOnProperty(prefix = "transactional-engine.inmemory.events", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SagaEvents inMemorySagaEvents(InMemoryTransactionalEngineProperties properties) {
-        log.info("Creating In-Memory SagaEvents implementation for Transactional Engine");
-        log.info("Configuration: logStepDetails={}, logTiming={}, logCompensation={}, maxEventsInMemory={}",
-            properties.getEvents().isLogStepDetails(),
-            properties.getEvents().isLogTiming(), 
-            properties.getEvents().isLogCompensation(),
-            properties.getEvents().getMaxEventsInMemory());
+        log.info(JsonUtils.json(
+                "event", "creating_inmemory_saga_events",
+                "component", "transactional_engine",
+                "implementation", "InMemorySagaEvents"
+        ));
+        log.info(JsonUtils.json(
+                "event", "inmemory_saga_events_configuration",
+                "log_step_details", Boolean.toString(properties.getEvents().isLogStepDetails()),
+                "log_timing", Boolean.toString(properties.getEvents().isLogTiming()),
+                "log_compensation", Boolean.toString(properties.getEvents().isLogCompensation()),
+                "max_events_in_memory", Integer.toString(properties.getEvents().getMaxEventsInMemory())
+        ));
         
         return new InMemorySagaEvents(properties.getEvents());
     }
@@ -81,15 +88,53 @@ public class InMemoryTransactionalEngineAutoConfiguration {
     @Bean
     @ConditionalOnProperty(prefix = "transactional-engine.inmemory.storage", name = "enabled", havingValue = "true", matchIfMissing = true)
     public InMemoryStorageService inMemoryStorageService(InMemoryTransactionalEngineProperties properties) {
-        log.info("Creating In-Memory Storage Service for Transactional Engine");
-        log.info("Storage configuration: maxSagaContexts={}, ttl={}, cleanupInterval={}",
-            properties.getStorage().getMaxSagaContexts(),
-            properties.getStorage().getTtl(),
-            properties.getStorage().getCleanupInterval());
+        log.info(JsonUtils.json(
+                "event", "creating_inmemory_storage_service",
+                "component", "transactional_engine",
+                "implementation", "InMemoryStorageService"
+        ));
+        log.info(JsonUtils.json(
+                "event", "inmemory_storage_configuration",
+                "max_saga_contexts", Integer.toString(properties.getStorage().getMaxSagaContexts()),
+                "ttl", properties.getStorage().getTtl().toString(),
+                "cleanup_interval", properties.getStorage().getCleanupInterval().toString()
+        ));
         
         return new InMemoryStorageService(properties.getStorage());
     }
     
+    /**
+     * Creates an in-memory StepEventPublisher for development and testing.
+     * 
+     * This bean provides:
+     * - Rich logging with emojis for better visibility during development
+     * - In-memory event storage for debugging and testing
+     * - Event history accessible for verification in tests
+     * - Thread-safe operations with configurable storage limits
+     * 
+     * Perfect for development environments and testing scenarios where
+     * external message queues aren't needed or available.
+     * 
+     * @param properties Configuration properties for the in-memory implementation
+     * @return InMemoryStepEventPublisher instance configured according to properties
+     */
+    @Bean("inMemoryStepEventPublisher")
+    @ConditionalOnProperty(prefix = "transactional-engine.inmemory.events", name = "step-publisher-enabled", havingValue = "true", matchIfMissing = true)
+    public InMemoryStepEventPublisher inMemoryStepEventPublisher(InMemoryTransactionalEngineProperties properties) {
+        log.info(JsonUtils.json(
+                "event", "creating_inmemory_step_event_publisher",
+                "component", "transactional_engine",
+                "implementation", "InMemoryStepEventPublisher"
+        ));
+        log.info(JsonUtils.json(
+                "event", "inmemory_step_event_publisher_configuration",
+                "log_step_details", Boolean.toString(properties.getEvents().isLogStepDetails()),
+                "max_events_in_memory", Integer.toString(properties.getEvents().getMaxEventsInMemory())
+        ));
+        
+        return new InMemoryStepEventPublisher(properties.getEvents());
+    }
+
     /**
      * Placeholder storage service for future enhancements.
      * Currently provides configuration validation and logging.
@@ -100,7 +145,12 @@ public class InMemoryTransactionalEngineAutoConfiguration {
         
         public InMemoryStorageService(InMemoryTransactionalEngineProperties.StorageProperties config) {
             this.config = config;
-            log.info("In-Memory Storage Service initialized (placeholder for future saga state management)");
+            log.info(JsonUtils.json(
+                    "event", "inmemory_storage_service_initialized",
+                    "component", "transactional_engine",
+                    "status", "initialized",
+                    "purpose", "placeholder_for_future_saga_state_management"
+            ));
         }
         
         public InMemoryTransactionalEngineProperties.StorageProperties getConfig() {
