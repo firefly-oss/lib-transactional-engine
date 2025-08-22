@@ -208,9 +208,12 @@ Avoid manual context plumbing. Use annotations to inject inputs, previous result
 Supported annotations and types:
 - `@Input` or `@Input("key")` — current step input (from StepInputs)
 - `@FromStep("stepId")` — result of another step
+- `@FromCompensationResult("stepId")` — result returned by a compensation for a given step id (after rollback)
+- `@CompensationError("stepId")` — Throwable thrown by a compensation for a given step id (null if not run / no error)
 - `@Header("X-Name")` / `@Headers Map<String,String>` — outbound headers
 - `@Variable("k")` / `@Variables Map<String,Object>` — variables map
 - `SagaContext` — injected by type
+- `@Required` (parameter-level) — fail fast when a resolved value is null (e.g., a missing header)
 - `@SetVariable("k")` — store the method return value into context variables
 
 Note on compensation parameter mapping:

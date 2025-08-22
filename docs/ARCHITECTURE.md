@@ -186,7 +186,7 @@ API & extensibility
 
 Resilience & safety
 - Per-step knobs (opt-in): retry with fixed/jittered backoff, per-attempt timeout, cpuBound scheduling hint, and per-run idempotency via idempotencyKey.
-- Parameter injection rules (strict): exactly one implicit, unannotated non-SagaContext parameter (the step input) is allowed; everything else should be annotated (@FromStep, @Header, @Headers, @Variable, @Variables, @Input). Misconfigurations fail fast.
+- Parameter injection rules (strict): exactly one implicit, unannotated non-SagaContext parameter (the step input) is allowed; everything else should be annotated (@Input, @FromStep, @FromCompensationResult, @CompensationError, @Header, @Headers, @Variable, @Variables). `@Required` enforces non-null after resolution. Misconfigurations fail fast.
 - Idempotency scope: per run only; not a cross-run dedup store. Design downstream APIs to be naturally idempotent.
 
 Observability & defaults

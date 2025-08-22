@@ -12,6 +12,7 @@ These are key capabilities implemented in the current code and covered throughou
 - Per‑compensation resilience overrides: tune `compensationRetry`, `compensationBackoffMs`, `compensationTimeoutMs`, and `compensationCritical` per step.
 - Per‑item expansion: expand one logical step into N clones at execution time with `ExpandEach` (automatic compensation wiring per clone).
 - Results and reporting: `SagaResult` includes compensation results/errors per step; `SagaReport` offers convenient accessors.
+- New DSL annotations: `@Required` for non-null parameters, `@FromCompensationResult` and `@CompensationError` for injecting compensation data into other compensations or steps.
 - Graph generation: generate a Graphviz diagram of discovered sagas using the built‑in CLI (see root README “Graph generation”).
 
 ## Contents
@@ -31,7 +32,8 @@ These are key capabilities implemented in the current code and covered throughou
 
 - [REFERENCE_CARD.md](REFERENCE_CARD.md)
   - An at‑a‑glance cheat sheet for annotations, core types, configuration, common APIs, and quick snippets. Includes sections on results/reporting and HTTP helpers.
-
+- [DSL.md](DSL.md)
+  - When to use the annotation‑based DSL, decision criteria vs programmatic builder, and best practices/anti‑patterns across the whole DSL.
 - [PROGRAMMATIC_QUICK_GUIDE.md](PROGRAMMATIC_QUICK_GUIDE.md)
   - Build sagas programmatically (without annotations): handlers/compensations, dynamic graphs, execution, resilience, patterns, and tests.
 

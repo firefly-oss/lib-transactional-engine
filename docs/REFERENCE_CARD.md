@@ -112,15 +112,22 @@ class InvoiceSteps {
 ## Parameter injection in step signatures
 Use annotations for multi-parameter injection to avoid manual context lookups:
 - `@FromStep("stepId") SomeType arg` — injects result from another step.
+- `@FromCompensationResult("stepId") SomeType arg` — injects the return value of a compensation for a given step id (available after rollback).
+- `@CompensationError("stepId") Throwable err` — injects the Throwable thrown by a compensation of a given step id (null if that compensation did not run or did not error).
 - `@Input SomeType arg` — injects current step input (typed value from `StepInputs`).
 - `@Header("X-Name") String arg` — injects a specific outbound header.
 - `@Headers Map<String,String> headers` — injects all outbound headers.
 - `@Variable("key") T arg` — injects a variable by key.
 - `@Variables Map<String,Object> vars` — injects all variables.
 - `SagaContext ctx` — always available if you need full context.
+- `@Required` (parameter-level) — fail fast if the resolved value is null at invocation time.
 
 Set or mutate variables using:
 - `@SetVariable("k")` — on method return, store value into `SagaContext` variables under key `"k"`.
+
+Validation notes
+- Exactly one implicit, unannotated non-SagaContext parameter is allowed per method (treated as the step input). Additional unannotated parameters cause a validation error.
+- `@CompensationError` parameter type must be assignable to `Throwable`.
 
 Copy‑paste template
 ```java
@@ -232,6 +239,24 @@ Mono<Void> undoB(@FromStep("a") String a, @Header("X-User-Id") String user, Saga
 
 Troubleshooting
 - If the first parameter type doesn’t match input or result, it will be null. Use @Input/@FromStep or change the type.
+
+Compensation result/error injection (new)
+```java
+@Saga(name = "Example")
+class S {
+  @SagaStep(id = "a", compensate = "ua") Mono<String> a() { return Mono.just("A"); }
+  Mono<Void> ua(@CompensationError("b") Throwable err, SagaContext ctx) {
+    if (err != null) ctx.putVariable("compErrB", err.getMessage());
+    return Mono.empty();
+  }
+
+  @SagaStep(id = "b", compensate = "ub", dependsOn = {"a"})
+  Mono<String> b(@Required @Header("X-User") String user) { return Mono.just("B:" + user); }
+  Mono<Void> ub(String res) { return Mono.error(new RuntimeException("boomB")); }
+}
+// If a downstream step fails after b completes, the engine compensates b (ub throws boomB).
+// Then a's compensation receives that error via @CompensationError("b").
+```
 
 ## Compensation policies
 - `STRICT_SEQUENTIAL` (default): exact reverse completion order, one at a time.

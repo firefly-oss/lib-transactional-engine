@@ -137,7 +137,7 @@ Long orderId = result.resultOf("createOrder", Long.class).orElse(null);
 ```
 
 Notes
-- Parameter injection: @Input, @FromStep, @Header/@Headers, @Variable/@Variables; SagaContext injected by type.
+- Parameter injection: @Input, @FromStep, @FromCompensationResult, @CompensationError, @Header/@Headers, @Variable/@Variables; @Required enforces non-null after resolution; SagaContext is injected by type.
 - HttpCall automatically adds X-Transactional-Id and ctx.headers() to WebClient calls. For other clients, use HttpCall.buildHeaders(ctx).
 
 ### Inspecting results and compensations (new)
@@ -246,6 +246,7 @@ Mono<Void> undoX(SagaContext ctx) { return Mono.empty(); }
 Observability
 - New `SagaEvents` callbacks provide compensation visibility: `onCompensationStarted`, `onCompensationRetry`, `onCompensationSkipped`, `onCompensationCircuitOpen`, `onCompensationBatchCompleted`.
 - Wire a custom `SagaEvents` bean to export metrics/traces; the default logger implementation will log these events.
+- Optional method-boundary logging is provided by StepLoggingAspect. Toggle with property: `transactionalengine.step-logging.enabled=true|false` (default true).
 
 ## Graph generation (Sagas DAG via Graphviz)
 Generate a DOT/PNG/SVG diagram of all sagas discovered in your microservice using a simple Maven command. This uses a CLI included in this library that bootstraps a lightweight Spring context, scans your packages for `@Saga`, `@SagaStep`, `@ExternalSagaStep`, and `@CompensationSagaStep`, and outputs a Graphviz graph.
@@ -355,6 +356,7 @@ Visuals and legend
 
 ## Documentation
 - Tutorial — hands‑on walkthrough: [docs/TUTORIAL.md](docs/TUTORIAL.md)
+- DSL guide and best practices — when to use the DSL and how to get it right: [docs/DSL.md](docs/DSL.md)
 - Reference Card — API and snippets: [docs/REFERENCE_CARD.md](docs/REFERENCE_CARD.md)
 - Architecture — internals and diagrams: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Deep dive into the engine: [docs/DEEP_DIVE_INTO_THE_ENGINE.md](docs/DEEP_DIVE_INTO_THE_ENGINE.md)

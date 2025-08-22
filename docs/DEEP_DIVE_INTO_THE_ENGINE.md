@@ -144,9 +144,12 @@ Per-step compensation overrides
 The engine resolves parameters for step and compensation methods using annotations and types:
 - `@Input` or `@Input("key")`: the current step input from `StepInputs` (direct value or key from a Map).
 - `@FromStep("stepId")`: inject result of another step.
+- `@FromCompensationResult("stepId")`: inject the value produced by a compensation for the given step id.
+- `@CompensationError("stepId")`: inject the Throwable captured from a compensation for the given step id (may be null if that compensation did not run or succeeded).
 - `@Header("X-Name")` / `@Headers`: outbound headers.
 - `@Variable("k")` / `@Variables`: variables map.
 - `SagaContext`: injected by type.
+- `@Required` on a parameter enforces non-null after resolution; otherwise the engine throws an `IllegalStateException` at invocation time.
 - `@SetVariable("k")` on a step method stores its return value into variables.
 
 If there’s exactly one unannotated parameter (and it isn’t SagaContext), it’s treated as the step input (implicit). Misconfigurations fail fast with a clear message.
