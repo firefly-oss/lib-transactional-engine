@@ -6,6 +6,7 @@ import com.catalis.transactionalengine.events.StepEventEnvelope;
 import com.catalis.transactionalengine.events.StepEventPublisher;
 import com.catalis.transactionalengine.registry.SagaDefinition;
 import com.catalis.transactionalengine.registry.StepDefinition;
+import com.catalis.transactionalengine.util.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
@@ -194,18 +195,29 @@ public class ReactiveStreamOptimizations {
                         // Reset circuit breaker after successful operations
                         failureCount.set(0);
                         lastFailureTime = null;
-                        log.debug("Circuit breaker reset for operation: {}", operationName);
+                        log.debug(JsonUtils.json(
+                                "event", "circuit_breaker_reset",
+                                "operation_name", operationName
+                        ));
                     }
                 })
                 .doOnError(error -> {
                     int failures = failureCount.incrementAndGet();
                     lastFailureTime = Instant.now();
-                    log.warn("Operation {} failed ({} failures): {}", 
-                            operationName, failures, error.getMessage());
+                    log.warn(JsonUtils.json(
+                            "event", "operation_failed",
+                            "operation_name", operationName,
+                            "failure_count", Integer.toString(failures),
+                            "error_message", error.getMessage() != null ? error.getMessage() : "Unknown error"
+                    ));
                     
                     if (failures >= failureThreshold) {
-                        log.error("Circuit breaker opened for operation: {} after {} failures", 
-                                operationName, failures);
+                        log.error(JsonUtils.json(
+                                "event", "circuit_breaker_opened",
+                                "operation_name", operationName,
+                                "failure_count", Integer.toString(failures),
+                                "failure_threshold", Integer.toString(failureThreshold)
+                        ));
                     }
                 });
         }
@@ -246,8 +258,12 @@ public class ReactiveStreamOptimizations {
             if (errorCount.incrementAndGet() <= maxErrors) {
                 errors.put(stepId, error);
             } else {
-                log.warn("Error limit exceeded, dropping error for step {}: {}", 
-                        stepId, error.getMessage());
+                log.warn(JsonUtils.json(
+                        "event", "error_limit_exceeded",
+                        "step_id", stepId,
+                        "error_message", error.getMessage() != null ? error.getMessage() : "Unknown error",
+                        "max_errors", Integer.toString(maxErrors)
+                ));
             }
         }
         
@@ -321,8 +337,14 @@ public class ReactiveStreamOptimizations {
             
             circuitBreaker.execute(riskyOperation, "exampleOperation")
                 .subscribe(
-                    result -> log.info("Operation succeeded: {}", result),
-                    error -> log.error("Operation failed: {}", error.getMessage())
+                    result -> log.info(JsonUtils.json(
+                            "event", "operation_succeeded",
+                            "result", result != null ? result.toString() : "null"
+                    )),
+                    error -> log.error(JsonUtils.json(
+                            "event", "operation_failed",
+                            "error_message", error.getMessage() != null ? error.getMessage() : "Unknown error"
+                    ))
                 );
         }
     }

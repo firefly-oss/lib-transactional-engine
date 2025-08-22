@@ -9,6 +9,7 @@ import com.catalis.transactionalengine.events.StepEventPublisher;
 import com.catalis.transactionalengine.observability.SagaEvents;
 import com.catalis.transactionalengine.registry.SagaDefinition;
 import com.catalis.transactionalengine.registry.StepDefinition;
+import com.catalis.transactionalengine.util.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
@@ -154,7 +155,11 @@ public class SagaExecutionCommand {
         // Idempotency within run
         if (sd.idempotencyKey != null && !sd.idempotencyKey.isEmpty()) {
             if (ctx.hasIdempotencyKey(sd.idempotencyKey)) {
-                log.info("Skipping step {} due to idempotency key: {}", stepId, sd.idempotencyKey);
+                log.info(JsonUtils.json(
+                        "event", "step_skipped_idempotent",
+                        "step_id", stepId,
+                        "idempotency_key", sd.idempotencyKey
+                ));
                 ctx.setStatus(stepId, StepStatus.DONE);
                 events.onStepSkippedIdempotent(sagaName, ctx.correlationId(), stepId);
                 return Mono.empty();
@@ -174,8 +179,14 @@ public class SagaExecutionCommand {
         if (log.isInfoEnabled()) {
             String mode = sd.handler != null ? "handler" : "method";
             String inputType = input != null ? input.getClass().getName() : "null";
-            log.info("Executing step {} in {} mode with timeout {}ms, retry {}, backoff {}ms", 
-                    stepId, mode, timeoutMs, sd.retry, backoffMs);
+            log.info(JsonUtils.json(
+                    "event", "executing_step",
+                    "step_id", stepId,
+                    "mode", mode,
+                    "timeout_ms", Long.toString(timeoutMs),
+                    "retry", Integer.toString(sd.retry),
+                    "backoff_ms", Long.toString(backoffMs)
+            ));
         }
         
         if (sd.handler != null) {
@@ -196,7 +207,11 @@ public class SagaExecutionCommand {
                 .doOnNext(res -> {
                     if (log.isInfoEnabled()) {
                         String resultType = res != null ? res.getClass().getName() : "null";
-                        log.info("Step {} completed with result type: {}", stepId, resultType);
+                        log.info(JsonUtils.json(
+                                "event", "step_completed",
+                                "step_id", stepId,
+                                "result_type", resultType
+                        ));
                     }
                     ctx.putResult(stepId, res);
                     
@@ -226,8 +241,13 @@ public class SagaExecutionCommand {
                     int attempts = ctx.getAttempts(stepId);
                     String errClass = err.getClass().getName();
                     String errMsg = err.getMessage() != null ? err.getMessage() : "No message";
-                    log.warn("Step {} failed after {} attempts with error: {} - {}", 
-                            stepId, attempts, errClass, errMsg);
+                    log.warn(JsonUtils.json(
+                            "event", "step_failed",
+                            "step_id", stepId,
+                            "attempts", Integer.toString(attempts),
+                            "error_class", errClass,
+                            "error_message", errMsg
+                    ));
                     events.onStepFailed(sagaName, ctx.correlationId(), stepId, err, attempts, latency);
                 });
     }
