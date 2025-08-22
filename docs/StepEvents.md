@@ -4,9 +4,18 @@ Audience: teams who want to notify downstream systems (Kafka, SQS, etc.) after a
 
 ---
 
+Table of contents
+- [What it does](#what-it-does)
+- [How to use](#how-to-use)
+- [Publication semantics](#publication-semantics)
+- [Default publisher (in‑memory ApplicationEvent)](#default-publisher-in-memory-applicationevent)
+- [Plugging custom MQ adapters (Kafka, SQS, …)](#plugging-custom-mq-adapters-kafka-sqs-)
+- [External steps and expansion](#external-steps-and-expansion)
+- [FAQ](#faq)
+
 ## What it does
 - When a saga completes successfully (no compensations executed), the engine publishes exactly one event per step that is annotated with `@StepEvent`.
-- Each event contains the saga name/id, step id, the step result as payload, a snapshot of headers from SagaContext, and timestamp.
+- Each event contains the saga name/id, step id, the step result as payload, a snapshot of headers from SagaContext, timestamp, and extra observability fields (attempts, latencyMs, startedAt, completedAt, resultType).
 - Nothing is published if the saga fails (i.e., compensation phase runs) to avoid emitting partially successful workflows.
 
 ---
@@ -59,8 +68,17 @@ public final class StepEventEnvelope {
   public final Object payload;    // step result
   public final Map<String,String> headers; // context headers snapshot
   public final Instant timestamp; // publication time
+
+  // Extra observability fields
+  public final Integer attempts;     // number of attempts for this step
+  public final Long latencyMs;       // measured step latency in milliseconds
+  public final Instant startedAt;    // when the step started
+  public final Instant completedAt;  // when the step completed/published
+  public final String resultType;    // class name of the payload
 }
 ```
+
+Format: StepEventEnvelope.toString() outputs a compact JSON-like line (without dumping payload), suitable for logs or lightweight bridges.
 
 ---
 

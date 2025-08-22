@@ -16,6 +16,7 @@ Table of contents
 - [Core concepts](#core-concepts)
 - [Compensation policies](#compensation-policies)
 - [Graph generation (Sagas DAG via Graphviz)](#graph-generation-sagas-dag-via-graphviz)
+- [Step events quickstart](#step-events-quickstart)
 - [Best practices](#best-practices)
 - [Documentation](#documentation)
 - [FAQ / Troubleshooting](#faq--troubleshooting)
@@ -31,7 +32,7 @@ Table of contents
 - Explicit: steps/compensations declared in code; DAG is validated at startup.
 - Safe: per‑step retry/backoff/timeout; optional per‑run idempotency.
 - Productive: typed StepInputs and SagaResult; parameter injection; HttpCall for header propagation.
-- Observable: lifecycle events (SagaEvents) and optional aspect logging.
+- Observable: lifecycle events (SagaEvents), Step events per step on success, and optional aspect logging.
 
 ## When to use / When not to use
 When to use
@@ -345,7 +346,41 @@ Visuals and legend
 - Steps with compensation have dashed borders and an attached hexagon node connected via a dashed edge. When the compensation is declared externally, the hexagon is labeled "compensate (external)".
 - Edge arrows represent dependsOn relationships.
 
- ## Best practices
+## Step events quickstart
+
+Publish one event per annotated step after a saga succeeds (no compensations).
+
+- Annotate steps with `@StepEvent(topic = "...", type = "...", key = "...")`.
+- Events are emitted only when the saga completes successfully; failing sagas emit none.
+- Payload = step result; headers = snapshot of `SagaContext.headers()`.
+- Envelope also includes attempts, latencyMs, startedAt, completedAt, and resultType for better observability.
+- toString(): standardized compact JSON-like format (no payload) for safe logging/bridging.
+- Default publisher: Spring ApplicationEvent (in‑process). Provide your own `StepEventPublisher` bean to target Kafka/SQS/etc.
+
+Example:
+
+```java
+@SagaStep(id = "reserve")
+@StepEvent(topic = "inventory.events", type = "RESERVED")
+public Mono<InventoryReservation> reserve(@Input Order in) { return reactor.core.publisher.Mono.empty(); }
+```
+
+Custom publisher:
+
+```java
+@Component
+class KafkaStepEventPublisher implements StepEventPublisher {
+  @Override
+  public Mono<Void> publish(StepEventEnvelope e) {
+    // map e.topic/type/key/payload/headers to your transport
+    return Mono.empty();
+  }
+}
+```
+
+See docs/StepEvents.md for the complete guide and adapter examples.
+
+## Best practices
 - Model clear, idempotent compensations per step; compensation is best‑effort and may be retried.
 - Set timeouts on remote calls; use bounded retries with modest backoff; consider jitter to avoid thundering herd.
 - Propagate correlation/user/tenant headers via HttpCall; avoid secrets in headers/logs.
@@ -458,6 +493,8 @@ Publish one event per annotated step after a saga succeeds (no compensations).
 - Annotate steps with `@StepEvent(topic = "...", type = "...", key = "...")`.
 - Events are emitted only when the saga completes successfully; failing sagas emit none.
 - Payload = step result; headers = snapshot of `SagaContext.headers()`.
+- Envelope also includes attempts, latencyMs, startedAt, completedAt, and resultType for better observability.
+- toString(): standardized compact JSON-like format (no payload) for safe logging/bridging.
 - Default publisher: Spring ApplicationEvent (in‑process). Provide your own `StepEventPublisher` bean to target Kafka/SQS/etc.
 
 Example:
