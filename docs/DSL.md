@@ -9,8 +9,8 @@ Prerequisites: Basic knowledge of Spring, Reactor (Mono), and the Saga pattern.
 Table of contents
 - [What is the DSL (and why it exists)](#what-is-the-dsl--and-why-it-exists-architecture-decisions)
 - [When to use the DSL / When to choose the programmatic builder](#when-to-use-the-dsl)
-- [Mental model (how to think in steps, dependencies, and compensations)](#mental-model-think-in-steps-and-compensations)
 - [Quick start pointers (where to learn each topic)](#quick-start-pointers)
+- [Mental model (how to think in steps, dependencies, and compensations)](#mental-model-think-in-steps-and-compensations)
 - [Parameter injection (deep dive with examples and validation rules)](#parameter-injection-deep-dive)
 - [Compensation behavior (data passing rules, cross-compensation data)](#compensation-behavior-data-passing--cross-compensation)
 - [Patterns that work well (external steps, external compensations, ExpandEach)](#patterns-that-work-well-with-the-dsl)
@@ -69,6 +69,14 @@ Not a good fit for the DSL (and engine itself):
 
 ---
 
+## Quick start pointers
+- Hands‑on tutorial: TUTORIAL.md
+- API cheatsheet: REFERENCE_CARD.md
+- How it works (internals): ARCHITECTURE.md and DEEP_DIVE_INTO_THE_ENGINE.md
+- Dynamic graphs (no annotations): PROGRAMMATIC_QUICK_GUIDE.md
+
+---
+
 ## Mental model (think in steps and compensations)
 
 - A step is one business action with a clear inverse (compensation).
@@ -85,14 +93,6 @@ flowchart LR
   X --> CB[compensate: cancelOrder]
   CB --> CR[compensate: releaseFunds]
 ```
-
----
-
-## Quick start pointers
-- Hands‑on tutorial: TUTORIAL.md
-- API cheatsheet: REFERENCE_CARD.md
-- How it works (internals): ARCHITECTURE.md and DEEP_DIVE_INTO_THE_ENGINE.md
-- Dynamic graphs (no annotations): PROGRAMMATIC_QUICK_GUIDE.md
 
 ---
 
@@ -244,3 +244,25 @@ flowchart LR
 - Programmatic builder: PROGRAMMATIC_QUICK_GUIDE.md
 
 Last updated: 2025‑08‑22
+
+
+---
+
+## Step events (optional)
+You can ask the engine to publish one event per step when the saga completes successfully (no compensations were executed), by annotating steps with `@StepEvent`.
+
+Quick example:
+
+```java
+@SagaStep(id = "charge")
+@StepEvent(topic = "billing.events", type = "PAYMENT_CHARGED")
+public Mono<Receipt> charge(@Input Payment p) { return reactor.core.publisher.Mono.empty(); }
+```
+
+Key points:
+- Events are emitted only after the saga finishes and only if it succeeded.
+- One event per annotated step, in completion order.
+- The payload is the step result; headers are copied from `SagaContext.headers()`.
+- By default, events are published as Spring ApplicationEvents (in‑process). Provide your own `StepEventPublisher` bean to publish to Kafka/SQS/etc.
+
+See the dedicated guide for details and adapter examples: docs/StepEvents.md

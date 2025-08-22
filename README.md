@@ -450,3 +450,35 @@ Issues and suggestions are welcome. If you plan a significant change, consider o
 
 ## License
 Apache-2.0
+
+## Step events quickstart
+
+Publish one event per annotated step after a saga succeeds (no compensations).
+
+- Annotate steps with `@StepEvent(topic = "...", type = "...", key = "...")`.
+- Events are emitted only when the saga completes successfully; failing sagas emit none.
+- Payload = step result; headers = snapshot of `SagaContext.headers()`.
+- Default publisher: Spring ApplicationEvent (in‑process). Provide your own `StepEventPublisher` bean to target Kafka/SQS/etc.
+
+Example:
+
+```java
+@SagaStep(id = "reserve")
+@StepEvent(topic = "inventory.events", type = "RESERVED")
+public Mono<InventoryReservation> reserve(@Input Order in) { return reactor.core.publisher.Mono.empty(); }
+```
+
+Custom publisher:
+
+```java
+@Component
+class KafkaStepEventPublisher implements StepEventPublisher {
+  @Override
+  public Mono<Void> publish(StepEventEnvelope e) {
+    // map e.topic/type/key/payload/headers to your transport
+    return Mono.empty();
+  }
+}
+```
+
+See docs/StepEvents.md for the complete guide and adapter examples.

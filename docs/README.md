@@ -4,16 +4,13 @@ Welcome to the Transactional Engine documentation. This folder collects practica
 
 If you are new, start with the Tutorial for a hands‑on walkthrough, then skim the Architecture and Deep Dive to internalize concepts. Keep the Reference Card open while you code. If you’re evaluating orchestration styles, read the SAGA vs TCC note.
 
-## Highlights (from the codebase)
+## Where to start
 
-These are key capabilities implemented in the current code and covered throughout the docs:
-- External saga steps: declare steps outside the orchestrator with `@ExternalSagaStep` (see Reference Card “External saga steps” and Deep Dive components section).
-- External compensations override in‑class ones: `@CompensationSagaStep` takes precedence when both are present.
-- Per‑compensation resilience overrides: tune `compensationRetry`, `compensationBackoffMs`, `compensationTimeoutMs`, and `compensationCritical` per step.
-- Per‑item expansion: expand one logical step into N clones at execution time with `ExpandEach` (automatic compensation wiring per clone).
-- Results and reporting: `SagaResult` includes compensation results/errors per step; `SagaReport` offers convenient accessors.
-- New DSL annotations: `@Required` for non-null parameters, `@FromCompensationResult` and `@CompensationError` for injecting compensation data into other compensations or steps.
-- Graph generation: generate a Graphviz diagram of discovered sagas using the built‑in CLI (see root README “Graph generation”).
+1. New to the library? Read the [Tutorial](TUTORIAL.md).
+2. Need the big picture? Skim [Architecture](ARCHITECTURE.md) and the [Deep Dive](DEEP_DIVE_INTO_THE_ENGINE.md).
+3. Unsure which pattern to use? Check [SAGA vs TCC](SAGA-vs-TCC.md).
+4. Coding and need quick reminders? Open the [Reference Card](REFERENCE_CARD.md).
+5. Building dynamic workflows? Use the [Programmatic Quick Guide](PROGRAMMATIC_QUICK_GUIDE.md).
 
 ## Contents
 
@@ -37,13 +34,16 @@ These are key capabilities implemented in the current code and covered throughou
 - [PROGRAMMATIC_QUICK_GUIDE.md](PROGRAMMATIC_QUICK_GUIDE.md)
   - Build sagas programmatically (without annotations): handlers/compensations, dynamic graphs, execution, resilience, patterns, and tests.
 
-## Where to start
+## Highlights (from the codebase)
 
-1. New to the library? Read the [Tutorial](TUTORIAL.md).
-2. Need the big picture? Skim [Architecture](ARCHITECTURE.md) and the [Deep Dive](DEEP_DIVE_INTO_THE_ENGINE.md).
-3. Unsure which pattern to use? Check [SAGA vs TCC](SAGA-vs-TCC.md).
-4. Coding and need quick reminders? Open the [Reference Card](REFERENCE_CARD.md).
-5. Building dynamic workflows? Use the [Programmatic Quick Guide](PROGRAMMATIC_QUICK_GUIDE.md).
+These are key capabilities implemented in the current code and covered throughout the docs:
+- External saga steps: declare steps outside the orchestrator with `@ExternalSagaStep` (see Reference Card “External saga steps” and Deep Dive components section).
+- External compensations override in‑class ones: `@CompensationSagaStep` takes precedence when both are present.
+- Per‑compensation resilience overrides: tune `compensationRetry`, `compensationBackoffMs`, `compensationTimeoutMs`, and `compensationCritical` per step.
+- Per‑item expansion: expand one logical step into N clones at execution time with `ExpandEach` (automatic compensation wiring per clone).
+- Results and reporting: `SagaResult` includes compensation results/errors per step; `SagaReport` offers convenient accessors.
+- New DSL annotations: `@Required` for non-null parameters, `@FromCompensationResult` and `@CompensationError` for injecting compensation data into other compensations or steps.
+- Graph generation: generate a Graphviz diagram of discovered sagas using the built‑in CLI (see root README “Graph generation”).
 
 ## Contributing and style
 
@@ -59,4 +59,4 @@ These are key capabilities implemented in the current code and covered throughou
 
 ---
 
-Last updated: 2025-08-21
+Last updated: 2025-08-22
