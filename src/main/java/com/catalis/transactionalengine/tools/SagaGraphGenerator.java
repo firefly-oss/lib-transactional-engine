@@ -91,14 +91,15 @@ public class SagaGraphGenerator {
                 System.err.println("[SagaGraph] WARN: No sagas found under packages: " + basePackages);
             }
 
-            // If verbose, print computed DAG execution layers per saga
-            if (verbose) {
-                for (SagaDefinition saga : sagas) {
-                    var layers = com.catalis.transactionalengine.engine.SagaTopology.buildLayers(saga);
-                    System.err.println("[SagaGraph] DAG layers for saga '" + saga.name + "':");
-                    for (int i = 0; i < layers.size(); i++) {
-                        System.err.println("  L" + (i+1) + ": " + layers.get(i));
-                    }
+            // Print computed DAG execution layers per saga (always visible to help debugging)
+            for (SagaDefinition saga : sagas) {
+                var layers = com.catalis.transactionalengine.engine.SagaTopology.buildLayers(saga);
+                System.err.println("[SagaGraph] DAG layers for saga '" + saga.name + "':");
+                String capStr = (saga.layerConcurrency <= 0 ? "unbounded" : Integer.toString(saga.layerConcurrency));
+                for (int i = 0; i < layers.size(); i++) {
+                    var layer = layers.get(i);
+                    String mode = (layer.size() > 1 ? "parallel" : "sequential");
+                    System.err.println("  L" + (i+1) + " (" + mode + ", size=" + layer.size() + ", cap=" + capStr + "): " + layer);
                 }
             }
 
@@ -197,6 +198,28 @@ public class SagaGraphGenerator {
                 for (String e : extra) attrs.append(", ").append(e);
 
                 sb.append("    ").append(nodeId).append(" [").append(attrs).append("];\n");
+            }
+
+            // Explicitly group nodes by topological layers to visually paint and annotate the topology
+            {
+                var layers = com.catalis.transactionalengine.engine.SagaTopology.buildLayers(saga);
+                String capStr = (saga.layerConcurrency <= 0 ? "unbounded" : Integer.toString(saga.layerConcurrency));
+                for (int i = 0; i < layers.size(); i++) {
+                    List<String> layer = layers.get(i);
+                    if (layer.isEmpty()) continue;
+                    String labelNode = sanitizeId("\"" + saga.name + ":L" + (i + 1) + "\"");
+                    String mode = (layer.size() > 1 ? "parallel" : "sequential");
+                    String label = "L" + (i + 1) + ": " + mode + "(size=" + layer.size() + ", cap=" + capStr + ")";
+                    // Define a plaintext label node used to annotate the layer
+                    sb.append("    ").append(labelNode).append(" [shape=plaintext, fontcolor=grey40, label=\"")
+                      .append(escape(label)).append("\"];\n");
+                    sb.append("    { rank=same; // Layer ").append(i + 1).append("\n");
+                    sb.append("      ").append(labelNode).append(";\n");
+                    for (String stepId : layer) {
+                        sb.append("      ").append(nodeId(saga.name, stepId)).append(";\n");
+                    }
+                    sb.append("    }\n");
+                }
             }
 
             // Edges from dependsOn -> step
