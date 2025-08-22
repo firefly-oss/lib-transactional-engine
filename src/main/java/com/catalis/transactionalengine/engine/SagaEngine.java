@@ -191,25 +191,7 @@ public class SagaEngine {
         events.onStart(sagaName, sagaId);
         events.onStart(sagaName, sagaId, finalCtx);
 
-        List<List<String>> layers = SagaTopology.buildLayers(workSaga);
-        // Expose topology in the execution context for better accessibility
-        finalCtx.setTopologyLayers(layers);
-        Map<String, List<String>> deps = new LinkedHashMap<>();
-        for (Map.Entry<String, StepDefinition> e : workSaga.steps.entrySet()) {
-            deps.put(e.getKey(), List.copyOf(e.getValue().dependsOn));
-        }
-        finalCtx.setStepDependencies(deps);
-        if (log.isDebugEnabled()) {
-            String layersStr = layers.stream()
-                    .map(l -> String.join(",", l))
-                    .collect(Collectors.joining(" | "));
-            log.debug(SagaLogUtil.json(
-                    "saga_topology","layers",
-                    "saga", sagaName,
-                    "sagaId", finalCtx.correlationId(),
-                    "layers", layersStr
-            ));
-        }
+        List<List<String>> layers = SagaTopologyReporter.exposeAndLog(workSaga, finalCtx, log);
         List<String> completionOrder = Collections.synchronizedList(new ArrayList<>());
         AtomicBoolean failed = new AtomicBoolean(false);
         Map<String, Throwable> stepErrors = new ConcurrentHashMap<>();
