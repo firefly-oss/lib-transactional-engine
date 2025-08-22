@@ -1,379 +1,789 @@
-# Transactional Engine — Architecture, Design Decisions, and Performance Guide
+# Architecture Overview
 
-This document explains how the in-memory saga orchestration library is built and why we made certain decisions. It includes visual diagrams and practical guidance so you can understand, extend, and operate it effectively.
+Deep dive into the Transactional Engine's internal architecture, design principles, and execution model.
 
-If you are new to the library, start with README.md for a quick overview, then come back here for the deeper internals. For a hands-on, end-to-end walkthrough, see docs/TUTORIAL.md.
+## Table of Contents
 
-## Table of contents
-- [Goals and constraints](#goals-and-constraints)
-- [Architectural overview](#architectural-overview)
-- [How execution works](#how-execution-works)
-  - [Compensation policies](#compensation-policies)
-- [Key design decisions](#key-design-decisions)
-- [Performance and memory techniques](#performance-and-memory-techniques)
-- [Memory footprint considerations](#memory-footprint-considerations)
-- [Configuration knobs and trade-offs](#configuration-knobs-and-trade-offs)
-- [Bean topology: singleton vs multiple SagaEngine beans](#bean-topology-singleton-vs-multiple-sagaengine-beans)
-- [Class relationships (simplified)](#class-relationships-simplified)
-- [Future extensions (non-goals today)](#future-extensions-non-goals-today)
+1. [High-Level Architecture](#high-level-architecture)
+2. [Core Components](#core-components)
+3. [Execution Model](#execution-model)
+4. [Saga Lifecycle](#saga-lifecycle)
+5. [Dependency Resolution](#dependency-resolution)
+6. [Compensation Mechanism](#compensation-mechanism)
+7. [Event System](#event-system)
+8. [Optimization Strategies](#optimization-strategies)
+9. [Threading and Concurrency](#threading-and-concurrency)
+10. [AWS Integration Architecture](#aws-integration-architecture)
+11. [Design Patterns](#design-patterns)
+12. [Performance Considerations](#performance-considerations)
 
-## Goals and constraints
-- In-memory orchestration: a single-JVM library with no persistence of saga state.
-- Deterministic orchestration semantics: DAG of steps with compensation on failure.
-- Developer ergonomics: annotation-based steps, parameter injection, and a typed API.
-- Operational safety: timeouts, retries with backoff and optional jitter, per-run idempotency.
+## High-Level Architecture
 
-## Architectural overview
-
-High-level components and their responsibilities:
+The Firefly Transactional Engine follows a modular, reactive architecture built on Spring Boot 3 and Project Reactor:
 
 ```mermaid
-flowchart LR
-  subgraph SpringApp[Your Spring Boot App]
-    S[Saga classes] --> R[SagaRegistry]
-    E[SagaEngine] -->|emits| EV[SagaEvents]
-    H[HttpCall helper]
-  end
-
-  R <--> E
-  E <--> C[SagaContext]
-  R --> D[SagaDefinition & StepDefinition]
-
-  EV -.optional.-> TR[Tracing/Metrics]
-```
-
-- SagaRegistry: discovers `@Saga` beans and their `@SagaStep` methods, builds `SagaDefinition`/`StepDefinition`, validates DAG, resolves proxy-safe invocation methods. Then performs a second pass to discover `@ExternalSagaStep` (external steps) and `@CompensationSagaStep` (external compensations) on any Spring bean, wiring them into the target saga. External compensations take precedence over in-class ones; duplicate step ids (in-class vs external or between externals) are rejected.
-- SagaEngine: executes the DAG layer-by-layer with concurrency, retries/backoff, and timeouts; stores results/metrics in `SagaContext`; compensates on failure; emits `SagaEvents`.
-- SagaContext: per-execution, in-memory container for headers, variables, step statuses, results, attempts, and latencies.
-- SagaEvents: pluggable observability sink; default logger-based sink is provided, with optional tracing/metrics integration.
-- HttpCall: helper for propagating headers (like correlation id) on outbound HTTP calls.
-
-## How execution works
-
-From discovery to a completed (or compensated) run:
-
-```mermaid
-sequenceDiagram
-  participant App as YourService
-  participant R as SagaRegistry
-  participant E as SagaEngine
-  participant C as SagaContext
-  participant EV as SagaEvents
-
-  App->>R: getSaga(name)
-  R-->>App: SagaDefinition
-  App->>E: execute(saga, inputs, ctx)
-  E->>EV: onStart(sagaName, correlationId)
-  E->>C: initialize per-run bookkeeping
-  loop For each DAG layer
-    E->>E: schedule steps in layer (concurrently)
-    alt step has idempotencyKey already seen
-      E->>EV: onStepSkippedIdempotent
-      E-->>C: mark SKIPPED
-    else step executes with retry/timeout
-      E->>App: invoke step method (reflection/handler)
-      alt success
-        E-->>C: store result/status/latency/attempts
-        E->>EV: onStepCompleted
-      else failure
-        E-->>C: mark FAILED
-        E->>EV: onStepFailed
-        E->>E: start compensation (reverse completion order)
-      end
+graph TB
+    subgraph "Client Layer"
+        CA[Client Applications]
+        REST[REST Controllers]
+        SERV[Service Layer]
     end
-  end
-  E->>EV: onCompleted(success?)
-  E-->>App: SagaResult (success or error)
+    
+    subgraph "Engine Layer"
+        SE[SagaEngine<br/>Facade]
+        SR[SagaRegistry]
+        EE[ExecutionEngine]
+        CE[CompensationEngine]
+    end
+    
+    subgraph "Infrastructure Layer"
+        ES[Event System]
+        OS[Observability System]
+        CTX[Context Manager]
+        OPT[Optimization Engine]
+    end
+    
+    subgraph "Platform Layer"
+        SB[Spring Boot 3]
+        PR[Project Reactor]
+        SCHED[Schedulers]
+    end
+    
+    subgraph "AWS Services"
+        CW[CloudWatch]
+        KIN[Kinesis]
+        SQS[SQS]
+        DDB[DynamoDB]
+    end
+    
+    CA --> SE
+    REST --> SE
+    SERV --> SE
+    
+    SE --> SR
+    SE --> EE
+    SE --> CE
+    
+    EE --> ES
+    EE --> OS
+    EE --> CTX
+    CE --> ES
+    SR --> OPT
+    
+    ES --> SB
+    OS --> SB
+    CTX --> PR
+    OPT --> PR
+    
+    OS --> CW
+    ES --> KIN
+    ES --> SQS
+    SR --> DDB
+    
+    style SE fill:#e1f5fe
+    style EE fill:#f3e5f5
+    style CE fill:#fff3e0
+    style ES fill:#e8f5e8
 ```
 
-DAG layering (topological ordering) — steps in the same layer run concurrently:
+### Design Principles
+
+1. **Reactive-First**: Built on non-blocking I/O with Project Reactor
+2. **Annotation-Driven**: Declarative configuration with sensible defaults
+3. **Event-Driven**: Comprehensive event publishing and observability
+4. **Compensation-Based**: Automatic rollback through compensation patterns
+5. **Cloud-Native**: First-class AWS integration with auto-configuration
+6. **Performance-Oriented**: Graph optimization and parallel execution
+7. **Extensible**: Plugin architecture for custom components
+
+## Core Components
+
+### SagaEngine
+
+The main orchestration facade providing a unified API for saga execution:
+
+```java
+public class SagaEngine {
+    private final SagaRegistry sagaRegistry;
+    private final SagaEvents sagaEvents;
+    private final StepEventPublisher stepEventPublisher;
+    private final CompensationPolicy defaultCompensationPolicy;
+    private final boolean autoOptimizationEnabled;
+}
+```
+
+**Responsibilities:**
+- Saga execution coordination
+- Input validation and preparation
+- Context management
+- Result aggregation
+- Error handling and compensation triggering
+
+### SagaRegistry
+
+Repository and factory for saga definitions:
+
+```java
+public class SagaRegistry {
+    private final Map<String, SagaDefinition> sagaDefinitions;
+    private final ApplicationContext applicationContext;
+    
+    public SagaDefinition getSagaDefinition(String sagaName);
+    public SagaDefinition getSagaDefinition(Class<?> sagaClass);
+    public List<String> getAllSagaNames();
+}
+```
+
+**Responsibilities:**
+- Saga discovery and registration
+- Annotation processing
+- Dependency graph construction
+- Metadata extraction
+
+### SagaDefinition
+
+Immutable representation of a saga's structure:
+
+```java
+public class SagaDefinition {
+    private final String name;
+    private final String description;
+    private final Class<?> sagaClass;
+    private final CompensationPolicy compensationPolicy;
+    private final Map<String, StepDefinition> steps;
+    private final DirectedAcyclicGraph<StepDefinition> dependencyGraph;
+    private final List<String> topologicalOrder;
+}
+```
+
+**Responsibilities:**
+- Step definition storage
+- Dependency relationship modeling
+- Execution order calculation
+- Metadata provision
+
+### StepDefinition
+
+Represents an individual step within a saga:
+
+```java
+public class StepDefinition {
+    private final String stepId;
+    private final String description;
+    private final Method method;
+    private final List<String> dependencies;
+    private final String compensationMethod;
+    private final RetryPolicy retryPolicy;
+    private final Duration timeout;
+    private final boolean parallel;
+    private final boolean required;
+}
+```
+
+### ExecutionEngine
+
+Core execution logic for processing saga steps:
+
+```java
+public class ExecutionEngine {
+    public Mono<SagaResult> execute(SagaDefinition saga, StepInputs inputs, SagaContext context) {
+        return createExecutionPlan(saga, context)
+            .flatMap(plan -> executeSteps(plan, inputs, context))
+            .onErrorResume(error -> handleExecutionError(error, saga, context));
+    }
+}
+```
+
+**Execution Flow:**
+1. Create execution plan from saga definition
+2. Resolve step dependencies
+3. Execute steps in topological order
+4. Handle parallel execution where possible
+5. Manage compensation on failures
+
+### CompensationEngine
+
+Handles saga rollback through compensation:
+
+```java
+public class CompensationEngine {
+    public Mono<Void> compensate(List<StepDefinition> completedSteps, 
+                                SagaContext context, 
+                                CompensationPolicy policy) {
+        return filterStepsForCompensation(completedSteps, policy)
+            .flatMap(steps -> executeCompensations(steps, context));
+    }
+}
+```
+
+## Execution Model
+
+### Step Execution Pipeline
+
+Each step goes through a standardized pipeline:
 
 ```mermaid
 flowchart LR
-  A(initBooking) --> B(reserveFlight)
-  A --> C(reserveHotel)
-  A --> D(reserveCar)
-  B & C & D --> E(capturePayment)
-  E --> F(issueItinerary)
+    A[Input Validation] --> B[Parameter Injection]
+    B --> C[Method Invocation]
+    C --> D[Result Processing]
+    D --> E[Event Publishing]
+    E --> F[Context Update]
+    
+    A1[Validate required inputs<br/>Apply default values<br/>Type conversion] -.-> A
+    B1[Inject @Input parameters<br/>Resolve @FromStep dependencies<br/>Provide context parameters] -.-> B
+    C1[Call annotated method<br/>Handle reactive types<br/>Apply retry policies] -.-> C
+    D1[Extract result from Mono/Flux<br/>Apply @SetVariable<br/>Validate constraints] -.-> D
+    E1[Publish @StepEvent<br/>Send observability events<br/>Update metrics] -.-> E
+    F1[Store step result<br/>Update step status<br/>Trigger dependent steps] -.-> F
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style C fill:#fff3e0
+    style D fill:#e8f5e8
+    style E fill:#fff8e1
+    style F fill:#fce4ec
 ```
 
-Retry/backoff/timeout flow for a single step:
+#### 1. Input Validation
+- Validates required inputs are present
+- Applies default values where configured
+- Type conversion and validation
+
+#### 2. Parameter Injection
+- Injects `@Input` parameters from saga inputs
+- Resolves `@FromStep` dependencies from previous steps
+- Provides `@Variable`, `@Header`, and context parameters
+
+#### 3. Method Invocation
+- Calls the annotated method with injected parameters
+- Handles reactive return types (Mono/Flux)
+- Applies retry policies and timeouts
+
+#### 4. Result Processing
+- Extracts result from Mono/Flux
+- Applies `@SetVariable` annotations
+- Validates result constraints
+
+#### 5. Event Publishing
+- Publishes `@StepEvent` annotations
+- Sends observability events
+- Updates metrics and traces
+
+#### 6. Context Update
+- Stores step result in context
+- Updates step status
+- Triggers dependent steps
+
+### Reactive Execution Flow
+
+The engine leverages Project Reactor for non-blocking execution:
+
+```java
+public Mono<SagaResult> execute(SagaDefinition saga, StepInputs inputs, SagaContext ctx) {
+    return Mono.fromCallable(() -> createExecutionPlan(saga, ctx))
+        .flatMap(plan -> {
+            return Flux.fromIterable(plan.getExecutableSteps())
+                .flatMap(step -> executeStepWithDependencies(step, inputs, ctx))
+                .then(Mono.just(buildSagaResult(ctx)));
+        })
+        .subscribeOn(Schedulers.boundedElastic())
+        .publishOn(Schedulers.parallel());
+}
+```
+
+## Saga Lifecycle
+
+### Lifecycle Phases
+
+1. **Discovery**: Annotation scanning and saga registration
+2. **Planning**: Dependency analysis and execution graph creation
+3. **Execution**: Step-by-step execution with dependency resolution
+4. **Completion**: Result aggregation and success handling
+5. **Compensation**: Error handling and rollback (if needed)
+6. **Cleanup**: Resource cleanup and context finalization
+
+### State Transitions
 
 ```mermaid
-flowchart LR
-  S[Start Step] --> I{Idempotency key already in context?}
-  I -- yes --> SK[Skip step] --> End
-  I -- no --> A[Attempt 1]
-  A -->|invoke with timeout| X{Success?}
-  X -- yes --> Done[Record result/status]
-  X -- no --> R{Remaining retries?}
-  R -- no --> Fail[Mark FAILED]
-  R -- yes --> B[Sleep backoff +/- jitter]
-  B --> A2[Attempt next]
-  A2 --> X
+stateDiagram-v2
+    [*] --> CREATED
+    CREATED --> PLANNING
+    CREATED --> ERROR
+    
+    PLANNING --> EXECUTING
+    PLANNING --> ERROR
+    
+    EXECUTING --> COMPLETED
+    EXECUTING --> COMPENSATING
+    EXECUTING --> ERROR
+    
+    COMPENSATING --> COMPENSATED
+    COMPENSATING --> ERROR
+    
+    COMPLETED --> [*]
+    COMPENSATED --> [*]
+    ERROR --> [*]
+    
+    note right of CREATED
+        Saga instance created
+        Initial validation
+    end note
+    
+    note right of PLANNING
+        Dependency analysis
+        Execution graph creation
+    end note
+    
+    note right of EXECUTING
+        Step-by-step execution
+        Dependency resolution
+    end note
+    
+    note right of COMPENSATING
+        Error handling
+        Rollback execution
+    end note
 ```
 
-Compensation order is the reverse of the actual completion order of successful steps. With policy GROUPED_PARALLEL, compensations may run in parallel within the same original layer to speed up rollbacks.
+### Context Evolution
 
-### Compensation policies
+The `SagaContext` evolves throughout execution:
 
-The engine supports multiple compensation strategies:
-- STRICT_SEQUENTIAL (default): compensate one step at a time in the exact reverse completion order.
-- GROUPED_PARALLEL: compensate in batches by original execution layer, running independent compensations in parallel within each batch. This reduces rollback time for wide layers.
-- RETRY_WITH_BACKOFF: sequential rollback with retry/backoff/timeout applied to each compensation (inherits step settings unless overridden per compensation).
-- CIRCUIT_BREAKER: sequential rollback that opens a circuit (skips remaining compensations) when a compensation marked as critical fails.
-- BEST_EFFORT_PARALLEL: runs all compensations in parallel; records errors via events without stopping others.
+```java
+// Initial state
+SagaContext context = SagaContext.create("order-processing")
+    .setVariable("customerId", "123")
+    .setHeader("correlation-id", "abc-def");
 
-When to use which
-- STRICT_SEQUENTIAL: when business invariants require strict ordering or participants are sensitive to concurrency.
-- GROUPED_PARALLEL: when compensations are independent and idempotent; minimizes total rollback time.
-- RETRY_WITH_BACKOFF: when compensations may transiently fail and benefit from bounded retries.
-- CIRCUIT_BREAKER: when certain compensations are critical and subsequent rollbacks should be skipped if they fail.
-- BEST_EFFORT_PARALLEL: when speed is paramount and partial failures are acceptable but should be observed.
+// After step completion
+context.setStepResult("validate-payment", paymentResult)
+    .setVariable("paymentId", paymentResult.getPaymentId())
+    .updateStepStatus("validate-payment", COMPLETED);
+```
 
-How to configure
-- Default Spring configuration wires STRICT_SEQUENTIAL. Override the SagaEngine bean to switch:
+## Dependency Resolution
+
+### Dependency Graph Construction
+
+The engine builds a Directed Acyclic Graph (DAG) from step dependencies:
+
+```java
+public class DependencyGraphBuilder {
+    public DirectedAcyclicGraph<StepDefinition> buildGraph(List<StepDefinition> steps) {
+        DirectedAcyclicGraph<StepDefinition> graph = new DirectedAcyclicGraph<>();
+        
+        // Add vertices
+        steps.forEach(graph::addVertex);
+        
+        // Add edges based on dependencies
+        steps.forEach(step -> {
+            step.getDependencies().forEach(depId -> {
+                StepDefinition dependency = findStepById(steps, depId);
+                graph.addEdge(dependency, step);
+            });
+        });
+        
+        return graph;
+    }
+}
+```
+
+### Execution Planning
+
+The planner determines optimal execution order:
+
+```java
+public class ExecutionPlanner {
+    public ExecutionPlan createPlan(SagaDefinition saga, SagaContext context) {
+        List<String> topologicalOrder = saga.getTopologicalOrder();
+        List<Set<String>> parallelGroups = identifyParallelGroups(saga);
+        
+        return ExecutionPlan.builder()
+            .topologicalOrder(topologicalOrder)
+            .parallelGroups(parallelGroups)
+            .build();
+    }
+}
+```
+
+### Parallel Execution
+
+Steps without interdependencies execute in parallel:
+
+```java
+public Mono<Void> executeParallelGroup(Set<StepDefinition> steps, 
+                                      StepInputs inputs, 
+                                      SagaContext context) {
+    return Flux.fromIterable(steps)
+        .flatMap(step -> executeStep(step, inputs, context))
+        .then();
+}
+```
+
+## Compensation Mechanism
+
+### Compensation Strategies
+
+#### COMPENSATE_ALL
+Runs compensation for all completed steps, regardless of success status:
+
+```java
+private List<StepDefinition> selectStepsForCompensation_ALL(List<StepDefinition> steps) {
+    return steps.stream()
+        .filter(step -> context.getStepStatus(step.getStepId()) == COMPLETED)
+        .collect(toList());
+}
+```
+
+#### COMPENSATE_COMPLETED
+Runs compensation only for successfully completed steps:
+
+```java
+private List<StepDefinition> selectStepsForCompensation_COMPLETED(List<StepDefinition> steps) {
+    return steps.stream()
+        .filter(step -> {
+            StepStatus status = context.getStepStatus(step.getStepId());
+            return status == COMPLETED && !step.hasErrors();
+        })
+        .collect(toList());
+}
+```
+
+#### FAIL_FAST
+Stops execution immediately on first error, no compensation:
+
+```java
+private Mono<SagaResult> handleFailFast(Throwable error, SagaContext context) {
+    return Mono.just(SagaResult.builder()
+        .failed()
+        .error(error)
+        .context(context)
+        .build());
+}
+```
+
+### Compensation Execution
+
+Compensations run in reverse dependency order:
+
+```java
+public Mono<Void> executeCompensation(List<StepDefinition> steps, SagaContext context) {
+    return Flux.fromIterable(steps)
+        .sort((a, b) -> Integer.compare(b.getExecutionOrder(), a.getExecutionOrder())) // Reverse order
+        .concatMap(step -> compensateStep(step, context))
+        .then();
+}
+```
+
+## Event System
+
+### Event Types
+
+The engine publishes various event types:
+
+1. **Saga Events**: Lifecycle events (started, completed, failed, compensated)
+2. **Step Events**: Step-level events (started, completed, failed, compensated)
+3. **Custom Events**: User-defined events via `@StepEvent`
+
+### Event Pipeline
+
+```
+Event Generation → Event Enrichment → Event Publishing → External Systems
+```
+
+### Event Publishers
+
+#### Local Event Publisher
+For in-process event handling:
+
+```java
+@Component
+public class LocalStepEventPublisher implements StepEventPublisher {
+    private final ApplicationEventPublisher eventPublisher;
+    
+    @Override
+    public Mono<Void> publishEvent(StepEventEnvelope event) {
+        return Mono.fromRunnable(() -> eventPublisher.publishEvent(event));
+    }
+}
+```
+
+#### Kinesis Event Publisher
+For streaming events to AWS Kinesis:
+
+```java
+@Component
+public class KinesisStepEventPublisher implements StepEventPublisher {
+    private final KinesisAsyncClient kinesisClient;
+    
+    @Override
+    public Mono<Void> publishEvent(StepEventEnvelope event) {
+        return Mono.fromFuture(() -> kinesisClient.putRecord(buildPutRequest(event)))
+            .then();
+    }
+}
+```
+
+## Optimization Strategies
+
+### Graph Optimization
+
+The engine applies several optimization strategies:
+
+#### 1. Dead Code Elimination
+Removes unreachable steps:
+
+```java
+public SagaDefinition optimizeDeadCode(SagaDefinition saga) {
+    Set<String> reachableSteps = findReachableSteps(saga.getDependencyGraph());
+    Map<String, StepDefinition> optimizedSteps = saga.getSteps().entrySet()
+        .stream()
+        .filter(entry -> reachableSteps.contains(entry.getKey()))
+        .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
+    
+    return saga.withSteps(optimizedSteps);
+}
+```
+
+#### 2. Parallel Group Identification
+Identifies steps that can execute in parallel:
+
+```java
+public List<Set<String>> identifyParallelGroups(DirectedAcyclicGraph<StepDefinition> graph) {
+    List<Set<String>> parallelGroups = new ArrayList<>();
+    Set<StepDefinition> processed = new HashSet<>();
+    
+    while (processed.size() < graph.vertexSet().size()) {
+        Set<StepDefinition> currentLevel = graph.vertexSet().stream()
+            .filter(vertex -> !processed.contains(vertex))
+            .filter(vertex -> allDependenciesProcessed(vertex, processed))
+            .collect(toSet());
+            
+        parallelGroups.add(currentLevel.stream()
+            .map(StepDefinition::getStepId)
+            .collect(toSet()));
+        processed.addAll(currentLevel);
+    }
+    
+    return parallelGroups;
+}
+```
+
+#### 3. Context Optimization
+Optimizes context usage for frequently accessed data:
+
+```java
+public class OptimizedSagaContext extends SagaContext {
+    private final Map<String, Object> fastAccessCache = new ConcurrentHashMap<>();
+    
+    @Override
+    public <T> T getStepResult(String stepId, Class<T> type) {
+        return (T) fastAccessCache.computeIfAbsent(
+            stepId, 
+            key -> super.getStepResult(key, type)
+        );
+    }
+}
+```
+
+## Threading and Concurrency
+
+### Thread Pool Configuration
+
+The engine uses multiple thread pools for different workloads:
 
 ```java
 @Configuration
-class EnginePolicyConfig {
-  @Bean
-  SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events) {
-    return new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
-  }
+public class ExecutorConfiguration {
+    
+    @Bean("sagaExecutor")
+    public TaskExecutor sagaExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(50);
+        executor.setQueueCapacity(1000);
+        executor.setThreadNamePrefix("saga-");
+        return executor;
+    }
+    
+    @Bean("compensationExecutor")
+    public TaskExecutor compensationExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(5);
+        executor.setMaxPoolSize(20);
+        executor.setThreadNamePrefix("compensation-");
+        return executor;
+    }
 }
 ```
 
-- In tests or programmatic usage:
+### Reactive Schedulers
+
+Different schedulers for different operations:
+
 ```java
-SagaEngine engine = new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
+public class ReactiveSchedulerConfig {
+    public static final Scheduler SAGA_SCHEDULER = Schedulers.newBoundedElastic(
+        50, 1000, "saga-scheduler");
+    public static final Scheduler COMPENSATION_SCHEDULER = Schedulers.newBoundedElastic(
+        20, 500, "compensation-scheduler");
+    public static final Scheduler EVENT_SCHEDULER = Schedulers.newParallel(
+        "event-publisher", 10);
+}
 ```
 
-Compensation overrides (per step)
-- `compensationRetry`, `compensationBackoffMs`, `compensationTimeoutMs` let you override the step’s resilience knobs specifically for compensation. `-1` values inherit step settings.
-- `compensationCritical` marks a compensation as critical; used by CIRCUIT_BREAKER to decide when to open the circuit.
+### Concurrency Safety
 
-Observability of compensation
-- Additional SagaEvents callbacks are emitted during rollback: `onCompensationStarted`, `onCompensationRetry`, `onCompensationSkipped`, `onCompensationCircuitOpen`, `onCompensationBatchCompleted`, and `onCompensated` (success or error).
+The engine ensures thread safety through:
 
-Visual (grouped compensation by layer)
-```mermaid
-flowchart LR
-  subgraph L3[Layer 3]
-    C1[compensate S1] & C2[compensate S2] & C3[compensate S3]
-  end
-  subgraph L2[Layer 2]
-    C4[compensate A]
-  end
-  L3 --> L2
-```
+1. **Immutable Objects**: `SagaDefinition`, `StepDefinition` are immutable
+2. **Concurrent Collections**: `ConcurrentHashMap` for mutable state
+3. **Atomic Operations**: `AtomicReference` for status updates
+4. **Copy-on-Write**: Context copying for parallel operations
 
-## Key design decisions
+## AWS Integration Architecture
 
-At a glance
-- In-memory, single-JVM orchestrator for simplicity and speed; no persisted state. Intended for short-lived, in-process workflows.
-- Deterministic execution over a DAG; compensation in reverse completion order.
-- Annotation-first API with programmatic escape hatches when you need dynamic flows or test doubles.
+### Auto-Configuration
 
-Execution semantics (deterministic by design)
-- DAG-first: compute topological layers; execute one layer at a time; steps within a layer run concurrently.
-- Failure model: on first failure, stop scheduling new layers and compensate successful steps in reverse completion order. Optional grouped-parallel compensation speeds large rollbacks.
+Spring Boot auto-configuration detects AWS services:
 
-API & extensibility
-- Convenience: @Saga + @SagaStep with parameter injection for clean signatures.
-- Control: programmatic builder (SagaBuilder), StepHandler, and typed StepInputs bypass reflection on the hot path.
-- Proxy-safe: registry resolves invocation methods on the actual Spring bean so AOP (@Transactional, aspects) remains effective.
-
-Resilience & safety
-- Per-step knobs (opt-in): retry with fixed/jittered backoff, per-attempt timeout, cpuBound scheduling hint, and per-run idempotency via idempotencyKey.
-- Parameter injection rules (strict): exactly one implicit, unannotated non-SagaContext parameter (the step input) is allowed; everything else should be annotated (@Input, @FromStep, @FromCompensationResult, @CompensationError, @Header, @Headers, @Variable, @Variables). `@Required` enforces non-null after resolution. Misconfigurations fail fast.
-- Idempotency scope: per run only; not a cross-run dedup store. Design downstream APIs to be naturally idempotent.
-
-Observability & defaults
-- Events: minimal logger-based SagaEvents out of the box; plug in metrics/tracing if present.
-- Conservative defaults: backoff 100ms, timeout disabled (Duration.ZERO), unbounded per-layer concurrency unless capped via @Saga.layerConcurrency.
-
-## Performance and memory techniques
-
-Defaults (short and sane)
-- Backoff: 100ms fixed (jitter optional). Timeout: disabled (Duration.ZERO). Layer concurrency: unbounded unless capped via @Saga.
-
-Golden rules
-- Keep steps non-blocking; if blocking is unavoidable, isolate it and mark cpuBound.
-- Prefer a couple of fast retries over one long timeout.
-- Keep payloads/results small; store only what you need in SagaContext.
-
-1) Reflection/annotation caching (hot path)
-- Arg resolvers compiled once per method and cached (ConcurrentHashMap). No repeated annotation scans.
-- Tip: Prefer parameter annotations to manual context plumbing—clearer and free at runtime thanks to caching.
-- Diagnostics: misconfigurations raise clear IllegalStateException on first use/startup.
-
-2) One-time registry scan (proxy-safe)
-- Single startup pass builds SagaDefinition/StepDefinition; resolves proxy-safe invocation methods against actual bean classes.
-- Complexity ~ O(number of step/compensation methods). No steady-state scanning cost.
-
-3) Minimal allocations on the hot path
-- Per-run state in SagaContext uses concurrent maps/sets; read-only views avoid copying.
-- StepInputs supports lazy resolvers evaluated just-in-time and reused for compensation.
-
-4) Concurrency & scheduling
-- Concurrent execution within a layer; cap with @Saga.layerConcurrency to protect CPU/memory and downstreams.
-- cpuBound=true runs on Reactor parallel; I/O steps remain on I/O-appropriate schedulers.
-- Avoid blocking inside steps; if needed, use a dedicated scheduler or handler to avoid starving pools.
-
-5) Retries/backoff/jitter
-- Fixed backoff by default; optional jitter/jitterFactor de-correlates waves of retries.
-- Implementation uses ThreadLocalRandom to jitter around base backoff.
-- Typical values: retry 1–3, backoff 100–500ms.
-
-6) Per-attempt timeouts
-- Bound each attempt to prevent hangs and wasted resources. Keep aligned with downstream SLAs.
-
-7) Per-run idempotency
-- idempotencyKey marks a step before execution; repeated keys within the same run are skipped (onStepSkippedIdempotent).
-- Scope is intra-run only; not a durable dedup mechanism.
-
-8) Thread-safe bookkeeping
-- All SagaContext structures are concurrent to safely handle many steps running in the same layer.
-
-9) Small, bounded surfaces
-- Caches scale with code surface (@SagaStep count). SagaContext is per-execution and GC-eligible when complete.
-
-Quick tuning checklist
-- Cap fan-out layers (layerConcurrency) when downstreams are sensitive.
-- Add jitter where many steps call the same downstream under load.
-- Prefer more layers (shallower concurrency) over huge single layers when memory is tight.
-- Keep objects small; store identifiers instead of large payloads when possible.
-
-Diagnostics quick guide
-- Check attempts/latencyMs in events to spot retries/timeouts quickly.
-- Wire Micrometer/Tracing for timers/spans; look for scheduler contention and queueing.
-- Slow rollbacks? Try GROUPED_PARALLEL and ensure compensations are idempotent and fast.
-
-## Memory footprint considerations
-- Caches (registry and argument resolvers) are unbounded but naturally sized by the number of discovered methods. Typical apps stabilize after startup.
-- Per-execution `SagaContext` is created at the start of `execute/run` and becomes eligible for GC when the Mono completes and references are dropped.
-- Step results are only stored if non-null; prefer lightweight DTOs for large payloads.
-
-## Configuration knobs and trade-offs
-- `layerConcurrency` (on `@Saga`): limit concurrent steps within a layer to control CPU/memory pressure.
-- `retry/backoff/jitter/jitterFactor`: trade latency for resilience; jitter helps de-correlate retries under load.
-- `timeout`: set per-step timeouts to bound latency; `0` disables.
-- `cpuBound`: set to true for CPU-intensive work to keep I/O schedulers free.
-
-## Class relationships (simplified)
-
-```mermaid
-classDiagram
-  class SagaRegistry {
-    +getSaga(name) SagaDefinition
-    +getAll() Collection<SagaDefinition>
-  }
-  class SagaDefinition {
-    +name: String
-    +steps: Map<String, StepDefinition>
-  }
-  class StepDefinition {
-    +id: String
-    +dependsOn: List<String>
-    +retry: int
-    +backoff: Duration
-    +timeout: Duration
-    +idempotencyKey: String
-  }
-  class SagaEngine {
-    +execute(...): Mono<SagaResult>
-    -argResolverCache: Map<Method, ArgResolver[]>
-  }
-  class SagaContext {
-    +headers(): Map<String,String>
-    +variables(): Map<String,Object>
-    +getResult(id): Object
-    +setStatus(id, StepStatus)
-  }
-
-  SagaRegistry --> SagaDefinition
-  SagaDefinition --> StepDefinition
-  SagaEngine --> SagaDefinition
-  SagaEngine --> SagaContext
-```
-
-## Future extensions (non-goals today)
-- Persistent state store and resume/retry after process restarts.
-- Pluggable schedulers/pools per step.
-- Bounded caches with eviction policies for extremely large applications.
-
-Tip: For a complete, runnable example that uses these concepts, see docs/TUTORIAL.md.
-
-
-## Bean topology: singleton vs multiple SagaEngine beans
-
-TL;DR
-- Default to a single SagaEngine bean per microservice. It’s safe for concurrent reuse and gives the best cache/observability reuse.
-- Consider multiple engines only when you truly need different defaults/policies or separate observability sinks.
-- Multiple engines do not improve throughput by themselves and do not create dedicated thread pools.
-
-### Context
-- SagaEngine holds only immutable collaborators (SagaRegistry, SagaEvents, CompensationPolicy). Per-execution state lives in SagaContext, and the engine’s internal caches use thread-safe structures (ConcurrentHashMap). There is no cross-run mutable state. This makes the engine safe to reuse concurrently from many threads.
-
-### Recommended default: single SagaEngine bean
-- For most services, declare a single SagaEngine @Bean and reuse it for all saga executions. This maximizes cache reuse, minimizes allocations, and provides a single, consistent place to attach observability (SagaEvents) and defaults.
-
-### When to consider multiple engines in the same microservice
-- Distinct execution/rollback policies per bounded context
-  - Example: payments sagas prefer GROUPED_PARALLEL compensation to speed rollbacks; fulfillment prefers STRICT_SEQUENTIAL for stronger ordering guarantees.
-- Segregated observability pipelines
-  - Route payments sagas to a different SagaEvents implementation (sampling, tags, sinks) than fulfillment/customer-support sagas.
-- Controlled experimentation or feature flags
-  - Run a subset of sagas through an alternate engine instance with different defaults without perturbing the primary engine.
-- Organizational multi-tenancy boundaries
-  - Hard isolation of event streams or admin controls by wiring different engine beans behind qualifiers. Note: concurrency/SLA isolation is primarily managed per saga via @Saga.layerConcurrency; multiple engines don’t create separate thread pools.
-
-### Non-reasons to create multiple engines
-- Throughput alone: the engine already executes steps concurrently within layers, and uses Reactor schedulers. Additional engine instances won’t bypass per-layer concurrency or materially increase throughput.
-- “Isolation” of discovered sagas: all engines share the same SagaRegistry (built from the Spring ApplicationContext). Prefer naming and calling the desired saga; only split contexts if you truly need separate registries.
-
-### Spring configuration examples
-
-Single engine (recommended):
 ```java
 @Configuration
-class EngineConfig {
-  @Bean
-  SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events) {
-    return new SagaEngine(registry, events, SagaEngine.CompensationPolicy.STRICT_SEQUENTIAL);
-  }
+@ConditionalOnClass({
+    DynamoDbAsyncClient.class,
+    CloudWatchAsyncClient.class,
+    KinesisAsyncClient.class
+})
+public class AwsTransactionalEngineAutoConfiguration {
+    
+    @Bean
+    @ConditionalOnMissingBean(SagaEvents.class)
+    public SagaEvents cloudWatchSagaEvents(CloudWatchAsyncClient cloudWatch) {
+        return new CloudWatchSagaEvents(cloudWatch);
+    }
+    
+    @Bean
+    @ConditionalOnProperty(name = "transactional-engine.aws.kinesis.enabled")
+    public StepEventPublisher kinesisStepEventPublisher(KinesisAsyncClient kinesis) {
+        return new KinesisStepEventPublisher(kinesis);
+    }
 }
 ```
 
-Multiple engines with qualifiers:
+### Service Integration
+
+#### CloudWatch Integration
 ```java
-@Configuration
-class MultiEngineConfig {
-  @Bean
-  @Qualifier("paymentsEngine")
-  SagaEngine paymentsEngine(SagaRegistry registry, PaymentsSagaEvents events) {
-    return new SagaEngine(registry, events, SagaEngine.CompensationPolicy.GROUPED_PARALLEL);
-  }
-
-  @Bean
-  @Qualifier("fulfillmentEngine")
-  SagaEngine fulfillmentEngine(SagaRegistry registry, FulfillmentSagaEvents events) {
-    return new SagaEngine(registry, events); // STRICT_SEQUENTIAL by default
-  }
+public class CloudWatchSagaEvents implements SagaEvents {
+    private final CloudWatchAsyncClient cloudWatch;
+    
+    @Override
+    public void sagaCompleted(String sagaName, String sagaId, Duration duration, SagaContext context) {
+        MetricDatum metric = MetricDatum.builder()
+            .metricName("saga_duration")
+            .value(duration.toMillis())
+            .unit(StandardUnit.MILLISECONDS)
+            .dimensions(Dimension.builder().name("SagaName").value(sagaName).build())
+            .build();
+            
+        cloudWatch.putMetricData(PutMetricDataRequest.builder()
+            .namespace("TransactionalEngine")
+            .metricData(metric)
+            .build());
+    }
 }
 ```
 
-### Usage with qualifiers
+#### Kinesis Integration
 ```java
-@Service
-class PaymentsService {
-  private final SagaEngine engine;
-  PaymentsService(@Qualifier("paymentsEngine") SagaEngine engine) { this.engine = engine; }
+public class KinesisStepEventPublisher implements StepEventPublisher {
+    private final KinesisAsyncClient kinesis;
+    private final String streamName;
+    
+    @Override
+    public Mono<Void> publishEvent(StepEventEnvelope event) {
+        PutRecordRequest request = PutRecordRequest.builder()
+            .streamName(streamName)
+            .partitionKey(event.getSagaId())
+            .data(SdkBytes.fromUtf8String(serializeEvent(event)))
+            .build();
+            
+        return Mono.fromFuture(kinesis.putRecord(request)).then();
+    }
 }
 ```
 
-### Operational notes and caveats
-- Don’t create per-request engines: you’ll duplicate caches (argResolverCache) and increase GC pressure for no benefit.
-- All engines operate over the same SagaRegistry in a single Spring context. If you truly need a different set of discovered sagas, consider separate application contexts or a filtered/alternate registry bean.
-- Engine instances do not own dedicated scheduler pools; cpuBound steps use Reactor’s parallel scheduler.
+## Design Patterns
+
+### Patterns Used
+
+1. **Facade Pattern**: `SagaEngine` provides unified interface
+2. **Builder Pattern**: `StepInputs.Builder`, `SagaResult.Builder`
+3. **Strategy Pattern**: `CompensationPolicy` implementations
+4. **Observer Pattern**: Event publishing system
+5. **Template Method**: Step execution pipeline
+6. **Registry Pattern**: `SagaRegistry` for saga discovery
+7. **Chain of Responsibility**: Event publishing chain
+
+### Extension Points
+
+The architecture provides several extension points:
+
+```java
+// Custom step event publisher
+@Component
+public class CustomEventPublisher implements StepEventPublisher {
+    @Override
+    public Mono<Void> publishEvent(StepEventEnvelope event) {
+        // Custom implementation
+    }
+}
+
+// Custom saga events handler
+@Component
+public class CustomSagaEvents implements SagaEvents {
+    @Override
+    public void sagaStarted(String sagaName, String sagaId, SagaContext context) {
+        // Custom implementation
+    }
+}
+
+// Custom context provider
+@Bean
+public SagaContextProvider customContextProvider() {
+    return (sagaName, correlationId) -> {
+        return new CustomSagaContext(sagaName, correlationId);
+    };
+}
+```
+
+## Performance Considerations
+
+### Optimization Techniques
+
+1. **Graph Pre-computation**: Dependency graphs computed at startup
+2. **Method Caching**: Reflection results cached for performance
+3. **Context Pooling**: Context objects reused when possible
+4. **Batch Event Publishing**: Events batched for efficiency
+5. **Lazy Loading**: Step definitions loaded on demand
+
+### Memory Management
+
+- **Weak References**: For cached metadata to allow GC
+- **Context Cleanup**: Automatic cleanup after saga completion
+- **Resource Pooling**: Connection and thread pool management
+- **Backpressure**: Built-in backpressure handling in reactive streams
+
+### Monitoring Points
+
+Key metrics to monitor:
+
+- Saga execution time
+- Step execution time
+- Compensation frequency
+- Thread pool utilization
+- Memory usage
+- Event publishing latency
+
+This architecture provides a robust, scalable foundation for distributed transaction orchestration with comprehensive observability and cloud-native capabilities.
