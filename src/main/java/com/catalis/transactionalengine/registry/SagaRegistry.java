@@ -3,6 +3,7 @@ package com.catalis.transactionalengine.registry;
 import com.catalis.transactionalengine.annotations.Saga;
 import com.catalis.transactionalengine.annotations.SagaStep;
 import com.catalis.transactionalengine.annotations.CompensationSagaStep;
+import com.catalis.transactionalengine.annotations.StepEvent;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.context.ApplicationContext;
 import org.springframework.util.StringUtils;
@@ -81,6 +82,11 @@ public class SagaRegistry {
                         stepAnn.cpuBound(),
                         m
                 );
+                // Optional event config
+                StepEvent se = m.getAnnotation(StepEvent.class);
+                if (se != null) {
+                    stepDef.stepEvent = new StepEventConfig(se.topic(), se.type(), se.key(), se.enabled());
+                }
                 // Compensation-specific overrides
                 if (stepAnn.compensationRetry() >= 0) stepDef.compensationRetry = stepAnn.compensationRetry();
                 if (stepAnn.compensationBackoffMs() >= 0) stepDef.compensationBackoff = Duration.ofMillis(stepAnn.compensationBackoffMs());
@@ -145,6 +151,11 @@ public class SagaRegistry {
                         es.cpuBound(),
                         m
                 );
+                // Optional event config on external step
+                StepEvent se = m.getAnnotation(StepEvent.class);
+                if (se != null) {
+                    stepDef.stepEvent = new StepEventConfig(se.topic(), se.type(), se.key(), se.enabled());
+                }
                 // Compensation-specific overrides
                 if (es.compensationRetry() >= 0) stepDef.compensationRetry = es.compensationRetry();
                 if (es.compensationBackoffMs() >= 0) stepDef.compensationBackoff = Duration.ofMillis(es.compensationBackoffMs());

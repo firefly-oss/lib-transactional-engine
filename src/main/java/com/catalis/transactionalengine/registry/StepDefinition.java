@@ -44,6 +44,9 @@ public class StepDefinition {
     public Duration compensationTimeout; // null means inherit
     public boolean compensationCritical; // default false
 
+    // Optional event publication configuration
+    public StepEventConfig stepEvent;
+
     public StepDefinition(String id,
                           String compensateName,
                           List<String> dependsOn,

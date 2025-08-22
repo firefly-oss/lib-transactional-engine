@@ -9,11 +9,15 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.web.reactive.function.client.WebClient;
+
+import com.catalis.transactionalengine.events.StepEventPublisher;
+import com.catalis.transactionalengine.events.ApplicationEventStepEventPublisher;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,13 +36,19 @@ public class TransactionalEngineConfiguration {
     }
 
     @Bean
-    public SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events) {
-        return new SagaEngine(registry, events);
+    public SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events, com.catalis.transactionalengine.events.StepEventPublisher publisher) {
+        return new SagaEngine(registry, events, publisher);
     }
 
     @Bean
     public SagaLoggerEvents sagaLoggerEvents() {
         return new SagaLoggerEvents();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(StepEventPublisher.class)
+    public StepEventPublisher stepEventPublisher(ApplicationEventPublisher appPublisher) {
+        return new ApplicationEventStepEventPublisher(appPublisher);
     }
 
     @Bean

@@ -3,6 +3,9 @@ package com.catalis.transactionalengine.engine;
 import com.catalis.transactionalengine.core.SagaContext;
 import com.catalis.transactionalengine.core.StepStatus;
 import com.catalis.transactionalengine.core.SagaResult;
+import com.catalis.transactionalengine.events.StepEventEnvelope;
+import com.catalis.transactionalengine.events.StepEventPublisher;
+import com.catalis.transactionalengine.events.NoOpStepEventPublisher;
 import com.catalis.transactionalengine.observability.SagaEvents;
 import com.catalis.transactionalengine.registry.SagaDefinition;
 import com.catalis.transactionalengine.registry.SagaRegistry;
@@ -59,6 +62,7 @@ public class SagaEngine {
     private final CompensationPolicy policy;
     private final StepInvoker invoker;
     private final SagaCompensator compensator;
+    private final StepEventPublisher stepEventPublisher;
 
     /**
          * Create a new SagaEngine.
@@ -66,18 +70,27 @@ public class SagaEngine {
          * @param events observability sink receiving lifecycle notifications
          */
         public SagaEngine(SagaRegistry registry, SagaEvents events) {
-        this(registry, events, CompensationPolicy.STRICT_SEQUENTIAL);
+        this(registry, events, CompensationPolicy.STRICT_SEQUENTIAL, new NoOpStepEventPublisher());
     }
 
     /**
      * Create a new SagaEngine with a specific compensation policy.
      */
     public SagaEngine(SagaRegistry registry, SagaEvents events, CompensationPolicy policy) {
+        this(registry, events, policy, new NoOpStepEventPublisher());
+    }
+
+    public SagaEngine(SagaRegistry registry, SagaEvents events, StepEventPublisher stepEventPublisher) {
+        this(registry, events, CompensationPolicy.STRICT_SEQUENTIAL, stepEventPublisher);
+    }
+
+    public SagaEngine(SagaRegistry registry, SagaEvents events, CompensationPolicy policy, StepEventPublisher stepEventPublisher) {
         this.registry = registry;
         this.events = events;
         this.policy = (policy != null ? policy : CompensationPolicy.STRICT_SEQUENTIAL);
         this.invoker = new StepInvoker(argumentResolver);
         this.compensator = new SagaCompensator(this.events, this.policy, this.invoker);
+        this.stepEventPublisher = (stepEventPublisher != null ? stepEventPublisher : new NoOpStepEventPublisher());
     }
 
 
@@ -215,7 +228,28 @@ public class SagaEngine {
                     boolean success = !failed.get();
                     events.onCompleted(sagaName, sagaId, success);
                     if (success) {
-                        return Mono.just(SagaResult.from(sagaName, finalCtx, compensated, stepErrors, workSaga.steps.keySet()));
+                        // Publish one event per step in completion order if configured
+                        return Flux.fromIterable(completionOrder)
+                                .concatMap(stepId -> {
+                                    StepDefinition sd = workSaga.steps.get(stepId);
+                                    if (sd == null || sd.stepEvent == null || !sd.stepEvent.enabled || sd.stepEvent.topic == null || sd.stepEvent.topic.isBlank()) {
+                                        return Mono.empty();
+                                    }
+                                    Object payload = finalCtx.getResult(stepId);
+                                    StepEventEnvelope env = new StepEventEnvelope(
+                                            sagaName,
+                                            sagaId,
+                                            stepId,
+                                            sd.stepEvent.topic,
+                                            sd.stepEvent.type,
+                                            sd.stepEvent.key,
+                                            payload,
+                                            java.util.Map.copyOf(finalCtx.headers()),
+                                            java.time.Instant.now()
+                                    );
+                                    return stepEventPublisher.publish(env);
+                                })
+                                .then(Mono.just(SagaResult.from(sagaName, finalCtx, compensated, stepErrors, workSaga.steps.keySet())));
                     }
                     Map<String, Object> materialized = inputs != null ? inputs.materializedView(finalCtx) : Map.of();
                     if (!overrideInputs.isEmpty()) {
@@ -425,6 +459,8 @@ public class SagaEngine {
                 csd.compensationBackoff = sd.compensationBackoff;
                 csd.compensationTimeout = sd.compensationTimeout;
                 csd.compensationCritical = sd.compensationCritical;
+                // propagate step event configuration
+                csd.stepEvent = sd.stepEvent;
                 if (ns.steps.putIfAbsent(cloneId, csd) != null) {
                     throw new IllegalStateException("Duplicate step id '" + cloneId + "' when expanding '" + id + "'");
                 }
@@ -480,6 +516,8 @@ public class SagaEngine {
             copy.compensationBackoff = sd.compensationBackoff;
             copy.compensationTimeout = sd.compensationTimeout;
             copy.compensationCritical = sd.compensationCritical;
+            // propagate step event configuration
+            copy.stepEvent = sd.stepEvent;
             if (ns.steps.putIfAbsent(id, copy) != null) {
                 throw new IllegalStateException("Duplicate step id '" + id + "' while copying saga");
             }
