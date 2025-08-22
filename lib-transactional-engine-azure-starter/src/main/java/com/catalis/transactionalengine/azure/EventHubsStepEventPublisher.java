@@ -2,6 +2,7 @@ package com.catalis.transactionalengine.azure;
 
 import com.catalis.transactionalengine.events.StepEventEnvelope;
 import com.catalis.transactionalengine.events.StepEventPublisher;
+import com.catalis.transactionalengine.util.JsonUtils;
 import com.azure.messaging.eventhubs.EventData;
 import com.azure.messaging.eventhubs.EventDataBatch;
 import com.azure.messaging.eventhubs.EventHubProducerAsyncClient;
@@ -63,7 +64,11 @@ public class EventHubsStepEventPublisher implements StepEventPublisher {
     public Mono<Void> publish(StepEventEnvelope envelope) {
         return Mono.fromRunnable(() -> {
             eventQueue.offer(envelope);
-            log.debug("Queued step event for publishing: {}.{}", envelope.sagaName, envelope.stepId);
+            log.debug(JsonUtils.json(
+                    "event", "step_event_queued",
+                    "saga_name", envelope.sagaName,
+                    "step_id", envelope.stepId
+            ));
         })
         .subscribeOn(Schedulers.boundedElastic())
         .then();
@@ -83,8 +88,11 @@ public class EventHubsStepEventPublisher implements StepEventPublisher {
             TimeUnit.SECONDS
         );
         
-        log.info("Started Event Hubs batch publisher with max batch size: {}, timeout: {}", 
-                config.getMaxRecordsPerBatch(), config.getBatchTimeout());
+        log.info(JsonUtils.json(
+                "event", "eventhubs_batch_publisher_started",
+                "max_batch_size", Integer.toString(config.getMaxRecordsPerBatch()),
+                "batch_timeout", config.getBatchTimeout().toString()
+        ));
     }
     
     private void publishBatch() {
@@ -108,15 +116,24 @@ public class EventHubsStepEventPublisher implements StepEventPublisher {
                         publishedEvents.addAndGet(result.successfulRecords());
                         if (result.failedRecords() > 0) {
                             failedEvents.addAndGet(result.failedRecords());
-                            log.warn("Published batch with {} successful and {} failed records", 
-                                    result.successfulRecords(), result.failedRecords());
+                            log.warn(JsonUtils.json(
+                                    "event", "batch_published_with_failures",
+                                    "successful_records", Integer.toString(result.successfulRecords()),
+                                    "failed_records", Integer.toString(result.failedRecords())
+                            ));
                         } else {
-                            log.debug("Successfully published batch of {} step events", result.successfulRecords());
+                            log.debug(JsonUtils.json(
+                                    "event", "batch_published_successfully",
+                                    "step_events_count", Integer.toString(result.successfulRecords())
+                            ));
                         }
                     },
                     error -> {
                         failedEvents.addAndGet(batch.size());
-                        log.error("Failed to publish step event batch: {}", error.getMessage());
+                        log.error(JsonUtils.json(
+                                "event", "batch_publishing_failed",
+                                "error_message", error.getMessage() != null ? error.getMessage() : "Unknown error"
+                        ));
                         // Re-queue failed events for retry
                         batch.forEach(eventQueue::offer);
                     }
@@ -149,12 +166,19 @@ public class EventHubsStepEventPublisher implements StepEventPublisher {
                             successfullyAdded++;
                         } else {
                             failedToAdd.add(envelope);
-                            log.debug("Event batch full, will retry event: {}.{}", 
-                                    envelope.sagaName, envelope.stepId);
+                            log.debug(JsonUtils.json(
+                                    "event", "event_batch_full_retry",
+                                    "saga_name", envelope.sagaName,
+                                    "step_id", envelope.stepId
+                            ));
                         }
                     } catch (JsonProcessingException e) {
-                        log.error("Failed to serialize step event: {}.{} - {}", 
-                                envelope.sagaName, envelope.stepId, e.getMessage());
+                        log.error(JsonUtils.json(
+                                "event", "step_event_serialization_failed",
+                                "saga_name", envelope.sagaName,
+                                "step_id", envelope.stepId,
+                                "error_message", e.getMessage() != null ? e.getMessage() : "Unknown serialization error"
+                        ));
                         failedToAdd.add(envelope);
                     }
                 }
@@ -170,7 +194,10 @@ public class EventHubsStepEventPublisher implements StepEventPublisher {
                 }
             })
             .onErrorResume(error -> {
-                log.error("Error creating or sending Event Hub batch: {}", error.getMessage());
+                log.error(JsonUtils.json(
+                        "event", "eventhub_batch_error",
+                        "error_message", error.getMessage() != null ? error.getMessage() : "Unknown Event Hub error"
+                ));
                 return Mono.just(new PublishResult(0, events.size()));
             });
     }
@@ -199,8 +226,12 @@ public class EventHubsStepEventPublisher implements StepEventPublisher {
             
             eventHubClient.close();
             
-            log.info("Event Hubs publisher shutdown complete. Published: {}, Failed: {}, Remaining: {}", 
-                    publishedEvents.get(), failedEvents.get(), eventQueue.size());
+            log.info(JsonUtils.json(
+                    "event", "eventhubs_publisher_shutdown_complete",
+                    "published_events", Integer.toString(publishedEvents.get()),
+                    "failed_events", Integer.toString(failedEvents.get()),
+                    "remaining_events", Integer.toString(eventQueue.size())
+            ));
         } catch (InterruptedException e) {
             scheduler.shutdownNow();
             Thread.currentThread().interrupt();

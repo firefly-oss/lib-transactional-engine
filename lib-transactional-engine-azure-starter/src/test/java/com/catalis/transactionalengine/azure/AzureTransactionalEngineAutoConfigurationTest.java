@@ -53,21 +53,20 @@ class AzureTransactionalEngineAutoConfigurationTest {
             });
     }
     
-    // Application Insights functionality has been removed
-    // @Test
-    // void applicationInsightsSagaEventsIsCreatedWhenEnabled() {
-    //     contextRunner
-    //         .withUserConfiguration(MockAzureClientsConfiguration.class)
-    //         .withPropertyValues(
-    //             "transactional-engine.azure.application-insights.enabled=true"
-    //         )
-    //         .run(context -> {
-    //             assertThat(context).hasSingleBean(TelemetryClient.class);
-    //             assertThat(context).hasSingleBean(SagaEvents.class);
-    //             assertThat(context.getBean(SagaEvents.class))
-    //                 .isInstanceOf(ApplicationInsightsSagaEvents.class);
-    //         });
-    // }
+    @Test
+    void applicationInsightsSagaEventsIsCreatedWhenEnabled() {
+        contextRunner
+            .withUserConfiguration(MockAzureClientsConfiguration.class)
+            .withPropertyValues(
+                "transactional-engine.azure.application-insights.enabled=true",
+                "transactional-engine.azure.application-insights.instrumentation-key=test-key"
+            )
+            .run(context -> {
+                assertThat(context).hasSingleBean(SagaEvents.class);
+                assertThat(context.getBean(SagaEvents.class))
+                    .isInstanceOf(ApplicationInsightsSagaEvents.class);
+            });
+    }
     
     @Test
     void eventHubsStepEventPublisherIsCreatedWhenEnabled() {

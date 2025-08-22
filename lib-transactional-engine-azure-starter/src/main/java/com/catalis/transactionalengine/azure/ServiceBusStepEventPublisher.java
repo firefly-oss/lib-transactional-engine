@@ -2,6 +2,7 @@ package com.catalis.transactionalengine.azure;
 
 import com.catalis.transactionalengine.events.StepEventEnvelope;
 import com.catalis.transactionalengine.events.StepEventPublisher;
+import com.catalis.transactionalengine.util.JsonUtils;
 import com.azure.messaging.servicebus.ServiceBusMessage;
 import com.azure.messaging.servicebus.ServiceBusSenderAsyncClient;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -85,8 +86,11 @@ public class ServiceBusStepEventPublisher implements StepEventPublisher {
             TimeUnit.SECONDS
         );
         
-        log.info("Started Service Bus batch publisher with max batch size: {}, timeout: {}s", 
-                config.getMaxBatchSize(), timeoutSeconds);
+        log.info(JsonUtils.json(
+                "event", "servicebus_batch_publisher_started",
+                "max_batch_size", Integer.toString(config.getMaxBatchSize()),
+                "timeout_seconds", Long.toString(timeoutSeconds)
+        ));
     }
     
     private void publishBatch() {
@@ -110,15 +114,24 @@ public class ServiceBusStepEventPublisher implements StepEventPublisher {
                         publishedEvents.addAndGet(result.successfulRecords());
                         if (result.failedRecords() > 0) {
                             failedEvents.addAndGet(result.failedRecords());
-                            log.warn("Published batch with {} successful and {} failed records", 
-                                    result.successfulRecords(), result.failedRecords());
+                            log.warn(JsonUtils.json(
+                                    "event", "batch_published_with_failures",
+                                    "successful_records", Integer.toString(result.successfulRecords()),
+                                    "failed_records", Integer.toString(result.failedRecords())
+                            ));
                         } else {
-                            log.debug("Successfully published batch of {} step events", result.successfulRecords());
+                            log.debug(JsonUtils.json(
+                                    "event", "batch_published_successfully",
+                                    "step_events_count", Integer.toString(result.successfulRecords())
+                            ));
                         }
                     },
                     error -> {
                         failedEvents.addAndGet(batch.size());
-                        log.error("Failed to publish step event batch: {}", error.getMessage());
+                        log.error(JsonUtils.json(
+                                "event", "batch_publishing_failed",
+                                "error_message", error.getMessage() != null ? error.getMessage() : "Unknown error"
+                        ));
                         // Re-queue failed events for retry
                         batch.forEach(eventQueue::offer);
                     }
@@ -157,8 +170,12 @@ public class ServiceBusStepEventPublisher implements StepEventPublisher {
                 messages.add(message);
                 
             } catch (JsonProcessingException e) {
-                log.error("Failed to serialize step event: {}.{} - {}", 
-                        envelope.sagaName, envelope.stepId, e.getMessage());
+                log.error(JsonUtils.json(
+                        "event", "step_event_serialization_failed",
+                        "saga_name", envelope.sagaName,
+                        "step_id", envelope.stepId,
+                        "error_message", e.getMessage() != null ? e.getMessage() : "Unknown serialization error"
+                ));
                 failedToSerialize.add(envelope);
             }
         }
@@ -173,7 +190,10 @@ public class ServiceBusStepEventPublisher implements StepEventPublisher {
         return serviceBusClient.sendMessages(messages)
             .then(Mono.just(new PublishResult(messages.size(), failedToSerialize.size())))
             .onErrorResume(error -> {
-                log.error("Error sending messages to Service Bus: {}", error.getMessage());
+                log.error(JsonUtils.json(
+                        "event", "servicebus_send_error",
+                        "error_message", error.getMessage() != null ? error.getMessage() : "Unknown Service Bus error"
+                ));
                 // Re-queue all events for retry
                 events.forEach(eventQueue::offer);
                 return Mono.just(new PublishResult(0, events.size()));
@@ -204,8 +224,12 @@ public class ServiceBusStepEventPublisher implements StepEventPublisher {
             
             serviceBusClient.close();
             
-            log.info("Service Bus publisher shutdown complete. Published: {}, Failed: {}, Remaining: {}", 
-                    publishedEvents.get(), failedEvents.get(), eventQueue.size());
+            log.info(JsonUtils.json(
+                    "event", "servicebus_publisher_shutdown_complete",
+                    "published_events", Integer.toString(publishedEvents.get()),
+                    "failed_events", Integer.toString(failedEvents.get()),
+                    "remaining_events", Integer.toString(eventQueue.size())
+            ));
         } catch (InterruptedException e) {
             scheduler.shutdownNow();
             Thread.currentThread().interrupt();

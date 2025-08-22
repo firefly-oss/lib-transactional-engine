@@ -1,6 +1,7 @@
 package com.catalis.transactionalengine.azure;
 
 import com.catalis.transactionalengine.observability.SagaEvents;
+import com.catalis.transactionalengine.util.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -46,7 +47,12 @@ public class AzureTransactionalEngineAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "transactional-engine.azure.cosmosdb", name = "enabled", havingValue = "true", matchIfMissing = true)
     public CosmosAsyncClient cosmosAsyncClient(AzureTransactionalEngineProperties properties) {
-        log.info("Creating Cosmos DB async client for Transactional Engine");
+        log.info(JsonUtils.json(
+                "event", "creating_cosmosdb_client",
+                "component", "azure_transactional_engine",
+                "client_type", "CosmosAsyncClient",
+                "purpose", "transactional_engine"
+        ));
         AzureTransactionalEngineProperties.CosmosDbProperties cosmosProperties = properties.getCosmosdb();
         
         if (cosmosProperties.getEndpoint() == null || cosmosProperties.getKey() == null) {
@@ -81,7 +87,12 @@ public class AzureTransactionalEngineAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "transactional-engine.azure.eventhubs", name = "enabled", havingValue = "true", matchIfMissing = false)
     public EventHubProducerAsyncClient eventHubProducerAsyncClient(AzureTransactionalEngineProperties properties) {
-        log.info("Creating Event Hub producer async client for Transactional Engine step events");
+        log.info(JsonUtils.json(
+                "event", "creating_eventhub_client",
+                "component", "azure_transactional_engine",
+                "client_type", "EventHubProducerAsyncClient",
+                "purpose", "step_events"
+        ));
         AzureTransactionalEngineProperties.EventHubsProperties eventHubsProperties = properties.getEventhubs();
         
         if (eventHubsProperties.getConnectionString() == null || eventHubsProperties.getEventHubName() == null) {
@@ -100,7 +111,12 @@ public class AzureTransactionalEngineAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "transactional-engine.azure.servicebus", name = "enabled", havingValue = "true", matchIfMissing = false)
     public ServiceBusSenderAsyncClient serviceBusSenderAsyncClient(AzureTransactionalEngineProperties properties) {
-        log.info("Creating Service Bus sender async client for Transactional Engine step events");
+        log.info(JsonUtils.json(
+                "event", "creating_servicebus_client",
+                "component", "azure_transactional_engine",
+                "client_type", "ServiceBusSenderAsyncClient",
+                "purpose", "step_events"
+        ));
         AzureTransactionalEngineProperties.ServiceBusProperties serviceBusProperties = properties.getServicebus();
         
         if (serviceBusProperties.getConnectionString() == null) {
@@ -124,20 +140,23 @@ public class AzureTransactionalEngineAutoConfiguration {
     }
 
     /**
-     * Application Insights-based SagaEvents implementation that publishes metrics to Application Insights.
+     * Application Insights-based SagaEvents implementation that simulates publishing metrics to Application Insights.
      * This replaces the default logging-only implementation when Application Insights is enabled.
-     * DISABLED: Application Insights dependencies are not available in Maven Central
+     * Since Application Insights SDK is not available in Maven Central, this provides a mock implementation
+     * that demonstrates what would be sent to Application Insights in a real scenario.
      */
-    /*
     @Bean
     @ConditionalOnMissingBean(SagaEvents.class)
     @ConditionalOnProperty(prefix = "transactional-engine.azure.application-insights", name = "enabled", havingValue = "true")
-    public SagaEvents applicationInsightsSagaEvents(TelemetryClient telemetryClient, 
-                                                   AzureTransactionalEngineProperties properties) {
-        log.info("Creating Application Insights-based SagaEvents implementation");
-        return new ApplicationInsightsSagaEvents(telemetryClient, properties.getApplicationInsights());
+    public SagaEvents applicationInsightsSagaEvents(AzureTransactionalEngineProperties properties) {
+        log.info(JsonUtils.json(
+                "event", "creating_saga_events_implementation",
+                "component", "azure_transactional_engine",
+                "implementation_type", "ApplicationInsightsSagaEvents",
+                "purpose", "mock_simulation"
+        ));
+        return new ApplicationInsightsSagaEvents(properties.getApplicationInsights());
     }
-    */
 
     /**
      * Event Hubs-based StepEventPublisher that publishes step events to an Event Hub.
@@ -147,7 +166,12 @@ public class AzureTransactionalEngineAutoConfiguration {
     @ConditionalOnProperty(prefix = "transactional-engine.azure.eventhubs", name = "enabled", havingValue = "true")
     public EventHubsStepEventPublisher eventHubsStepEventPublisher(EventHubProducerAsyncClient eventHubClient,
                                                                   AzureTransactionalEngineProperties properties) {
-        log.info("Creating Event Hubs-based StepEventPublisher");
+        log.info(JsonUtils.json(
+                "event", "creating_step_event_publisher",
+                "component", "azure_transactional_engine",
+                "publisher_type", "EventHubsStepEventPublisher",
+                "target", "event_hubs"
+        ));
         return new EventHubsStepEventPublisher(eventHubClient, properties.getEventhubs());
     }
 
@@ -159,7 +183,12 @@ public class AzureTransactionalEngineAutoConfiguration {
     @ConditionalOnProperty(prefix = "transactional-engine.azure.servicebus", name = "enabled", havingValue = "true")
     public ServiceBusStepEventPublisher serviceBusStepEventPublisher(ServiceBusSenderAsyncClient serviceBusClient,
                                                                     AzureTransactionalEngineProperties properties) {
-        log.info("Creating Service Bus-based StepEventPublisher");
+        log.info(JsonUtils.json(
+                "event", "creating_step_event_publisher",
+                "component", "azure_transactional_engine",
+                "publisher_type", "ServiceBusStepEventPublisher",
+                "target", "service_bus"
+        ));
         return new ServiceBusStepEventPublisher(serviceBusClient, properties.getServicebus());
     }
 }
