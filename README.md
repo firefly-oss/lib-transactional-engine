@@ -1,96 +1,46 @@
 # Firefly Transactional Engine
 
-A powerful, reactive Saga orchestration engine for Spring Boot 3 applications, providing distributed transaction management with compensation-based error recovery and comprehensive AWS cloud integrations.
+A high-performance, reactive Saga orchestration engine designed for mission-critical Spring Boot 3 applications. Built for the modern cloud-native era, it provides enterprise-grade distributed transaction management with intelligent compensation strategies, comprehensive observability, and seamless integration with major cloud platforms.
 
-## 🚀 Overview
+**Key Differentiators:**
+- **Zero-Persistence Design**: Pure in-memory execution with automatic context optimization
+- **Type-Safe API**: Method reference support with compile-time validation
+- **Cloud-Native**: Native integrations for AWS, Azure, and Google Cloud Platform
+- **Banking-Grade Reliability**: Built for the **Firefly OpenCore Banking Platform** by Firefly Software Solutions
+- **Developer Experience**: Annotation-driven with fluent programmatic alternatives
+- **Production Ready**: Comprehensive retry policies, circuit breakers, and compensation strategies
 
-The Transactional Engine is a modern, annotation-driven framework that simplifies distributed transaction management in microservices architectures. Built on Spring Boot 3 and Project Reactor, it provides:
+## Table of Contents
 
-- **Saga Pattern Implementation**: Orchestrate complex distributed transactions with automatic compensation
-- **Reactive Programming**: Built on Project Reactor for non-blocking, scalable operations
-- **Rich DSL**: Annotation-based configuration with programmatic alternatives
-- **Cloud Integration**: Native support for AWS (CloudWatch, Kinesis, SQS, DynamoDB) and Azure (Application Insights, Event Hubs, Service Bus, Cosmos DB)
-- **Comprehensive Observability**: Built-in metrics, logging, and event publishing
-- **Production Ready**: Optimizations, resilience patterns, and monitoring capabilities
+- [Quick Start](#quick-start)
+- [Core Features](#core-features)
+- [Saga Definition](#saga-definition)
+  - [Annotation-Based Sagas](#annotation-based-sagas)
+  - [External Steps](#external-steps)
+  - [Programmatic Sagas](#programmatic-sagas)
+- [Step Configuration](#step-configuration)
+- [Parameter Injection](#parameter-injection)
+- [Compensation](#compensation)
+- [Execution](#execution)
+- [Event Publishing](#event-publishing)
+- [HTTP Integration](#http-integration)
+- [Observability](#observability)
+- [Advanced Features](#advanced-features)
+- [License](#license)
 
-## 📦 Modules
+## Quick Start
 
-### Core Module (`lib-transactional-engine-core`)
-The foundation library providing:
-- Saga execution engine with reactive stream optimizations
-- Annotation-based DSL with enhanced step execution context
-- Step orchestration and compensation with improved error handling
-- Event publishing framework with structured logging
-- Enhanced observability with JsonUtils for consistent serialization
-- StepLoggingAspect with production-ready structured logging
-- Redis, ActiveMQ, and RabbitMQ integrations
+### Add Dependency
 
-### AWS Starter (`lib-transactional-engine-aws-starter`)
-Spring Boot auto-configuration for AWS services:
-- CloudWatch metrics and logging
-- Kinesis event streaming
-- SQS message publishing
-- DynamoDB persistence support
-- Auto-configuration with sensible defaults
-
-### Azure Starter (`lib-transactional-engine-azure-starter`)
-Spring Boot auto-configuration for Azure services:
-- ApplicationInsightsSagaEvents for comprehensive telemetry and observability
-- Event Hubs event streaming for high-throughput step events
-- Service Bus message publishing for reliable saga coordination
-- Cosmos DB persistence support for globally distributed saga state
-- Auto-configuration with sensible defaults and conditional bean creation
-- Production-ready structured JSON logging with Azure integration
-
-### In-Memory Starter (`lib-transactional-engine-inmemory-starter`)
-Vanilla Spring Boot implementation for development and small-scale deployments:
-- Structured JSON logging for production-ready observability
-- In-memory event storage for debugging
-- Configurable logging levels (step details, timing, compensation)
-- No external dependencies - perfect for getting started
-- Ideal for development, testing, and proof-of-concept projects
-
-## 🏃 Quick Start
-
-### 1. Add Dependencies
-
-For basic usage:
 ```xml
 <dependency>
     <groupId>com.catalis</groupId>
-    <artifactId>lib-transactional-engine-core</artifactId>
+    <artifactId>lib-transactional-engine</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 ```
 
-For AWS integration:
-```xml
-<dependency>
-    <groupId>com.catalis</groupId>
-    <artifactId>lib-transactional-engine-aws-starter</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-</dependency>
-```
-
-For Azure integration:
-```xml
-<dependency>
-    <groupId>com.catalis</groupId>
-    <artifactId>lib-transactional-engine-azure-starter</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-</dependency>
-```
-
-For in-memory development/testing (recommended for getting started):
-```xml
-<dependency>
-    <groupId>com.catalis</groupId>
-    <artifactId>lib-transactional-engine-inmemory-starter</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-</dependency>
-```
-
-### 2. Enable the Engine
+### Enable Engine
 
 ```java
 @SpringBootApplication
@@ -102,11 +52,11 @@ public class Application {
 }
 ```
 
-### 3. Define Your First Saga
+### Define Saga
 
 ```java
 @Component
-@Saga("order-processing")
+@Saga(name = "order-processing")
 public class OrderProcessingSaga {
     
     @SagaStep(id = "validate-payment")
@@ -122,7 +72,6 @@ public class OrderProcessingSaga {
         return inventoryService.reserve(payment.getItems());
     }
     
-    @CompensationSagaStep
     public Mono<Void> releaseInventory(
             @FromStep("reserve-inventory") ReservationResult reservation) {
         return inventoryService.release(reservation.getReservationId());
@@ -130,7 +79,7 @@ public class OrderProcessingSaga {
 }
 ```
 
-### 4. Execute the Saga
+### Execute Saga
 
 ```java
 @RestController
@@ -146,102 +95,382 @@ public class OrderController {
 }
 ```
 
-## 📚 Documentation
+## Core Features
 
-### Core Concepts
-- **[Getting Started Guide](docs/getting-started.md)** - Step-by-step tutorial with examples
-- **[Architecture Overview](docs/architecture.md)** - Engine internals and design principles
-- **[Saga Patterns](docs/saga-patterns.md)** - Saga vs TCC patterns and when to use each
+- **Saga Pattern**: Distributed transaction orchestration with automatic compensation
+- **Reactive**: Built on Project Reactor for non-blocking operations
+- **Annotation-Driven**: Simple DSL with programmatic alternatives
+- **Event Publishing**: Built-in event framework with observability
+- **Compensation Strategies**: Multiple policies for error recovery
+- **Cloud Integration**: Native AWS, Azure, and Google Cloud support
+- **Method References**: Type-safe execution using Class::method syntax
+- **Automatic Optimization**: Context optimization for sequential vs concurrent execution
+- **Step Expansion**: Dynamic step generation with ExpandEach
 
-### Development
-- **[API Reference](docs/api-reference.md)** - Complete annotation and method reference
-- **[Configuration Guide](docs/configuration.md)** - Properties, customization, and tuning
-- **[Examples](docs/examples.md)** - Real-world use cases and patterns
+## Saga Definition
 
-### AWS Integration
-- **[AWS Setup](docs/aws-integration.md)** - CloudWatch, Kinesis, SQS, and DynamoDB configuration
-- **[Monitoring & Observability](docs/monitoring.md)** - Metrics, logging, and distributed tracing
+### Annotation-Based Sagas
 
-### Azure Integration
-- **[Azure Setup](docs/azure-integration.md)** - Application Insights, Event Hubs, Service Bus, and Cosmos DB configuration
+Define sagas using the `@Saga` annotation on Spring components:
 
-### Advanced Topics
-- **[Performance Optimization](docs/performance.md)** - Tuning for high-throughput scenarios
-- **[Production Deployment](docs/production.md)** - Best practices and operational considerations
-
-## 🔧 Key Features
-
-### Annotation-Driven DSL
-Define complex workflows with simple annotations:
 ```java
-@SagaStep(stepId = "process-payment", 
-          dependsOn = {"validate-order", "check-inventory"},
-          compensation = "refundPayment",
-          retryPolicy = @Retry(maxAttempts = 3))
-public Mono<PaymentResult> processPayment(@Input("amount") BigDecimal amount) {
-    // Implementation
+@Component
+@Saga(name = "payment-saga", layerConcurrency = 5)
+public class PaymentSaga {
+    
+    @SagaStep(id = "validate", retry = 3, backoffMs = 1000)
+    public Mono<ValidationResult> validate(@Input PaymentRequest request) {
+        return validationService.validate(request);
+    }
+    
+    @SagaStep(id = "process", dependsOn = "validate", timeoutMs = 30000)
+    public Mono<PaymentResult> process(
+            @FromStep("validate") ValidationResult validation,
+            @Header("X-User-Id") String userId) {
+        return paymentService.process(validation, userId);
+    }
 }
 ```
 
-### Programmatic API
-Alternative to annotations for dynamic workflows:
-```java
-sagaEngine.execute(OrderProcessingSaga::validatePayment, inputs)
-    .flatMap(result -> sagaEngine.execute(OrderProcessingSaga::processPayment, 
-        StepInputs.from(result)));
-```
+### External Steps
 
-### Event-Driven Architecture
-Publish and consume step events:
+Define steps outside the main saga class:
+
 ```java
-@SagaStep(id = "create-order")
-@StepEvent(topic = "order-events", 
-           type = "ORDER_CREATED")
-public Mono<Order> createOrder(@Input("orderData") OrderData data) {
-    return orderService.create(data);
+@Component
+public class ExternalSteps {
+    
+    @ExternalSagaStep(saga = "payment-saga", id = "notify", 
+                      dependsOn = "process", compensate = "cancelNotification")
+    public Mono<Void> sendNotification(@FromStep("process") PaymentResult result) {
+        return notificationService.send(result);
+    }
+    
+    public Mono<Void> cancelNotification(@FromStep("notify") Void input) {
+        return notificationService.cancel();
+    }
 }
 ```
 
-### Compensation Strategies
-Multiple compensation policies:
-- `STRICT_SEQUENTIAL`: Execute compensations in strict reverse order
-- `GROUPED_PARALLEL`: Execute compensations in parallel groups
-- `RETRY_WITH_BACKOFF`: Retry failed compensations with exponential backoff
-- `CIRCUIT_BREAKER`: Use circuit breaker pattern for compensations
-- `BEST_EFFORT_PARALLEL`: Execute all compensations in parallel with best effort
+### Programmatic Sagas
 
-### Reactive & Non-Blocking
-Built on Project Reactor:
-- Non-blocking I/O
-- Backpressure handling
-- Parallel execution support
-- Resource efficient
+Build sagas programmatically using the fluent API:
 
-## 🌟 Why Choose Transactional Engine?
+```java
+@Configuration
+public class SagaConfig {
+    
+    @Bean
+    public SagaDefinition paymentSaga() {
+        return SagaBuilder.named("programmatic-payment")
+            .step("validate")
+                .handler((PaymentRequest req, SagaContext ctx) -> 
+                    validationService.validate(req))
+                .retry(3)
+                .backoffMs(1000)
+                .compensation((result, ctx) -> 
+                    validationService.rollback(result))
+                .add()
+            .step("process")
+                .dependsOn("validate")
+                .handler((ValidationResult validation, SagaContext ctx) -> 
+                    paymentService.process(validation))
+                .timeoutMs(30000)
+                .add()
+            .build();
+    }
+}
+```
 
-- **🎯 Focused**: Purpose-built for distributed transaction orchestration
-- **⚡ Performant**: Reactive architecture with optimization features
-- **🔧 Flexible**: Annotation DSL with programmatic alternatives
-- **☁️ Cloud Native**: First-class AWS integration with auto-configuration
-- **📊 Observable**: Comprehensive metrics, logging, and event publishing
-- **🛡️ Resilient**: Built-in retry policies, circuit breakers, and compensation
-- **🧪 Testable**: Rich testing support with mocking and simulation
-- **📈 Scalable**: Designed for high-throughput, low-latency scenarios
+## Step Configuration
 
-## 🤝 Contributing
+Configure step behavior with comprehensive options:
 
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
+```java
+@SagaStep(
+    id = "complex-step",
+    dependsOn = {"step1", "step2"},
+    retry = 5,
+    backoffMs = 2000,
+    timeoutMs = 60000,
+    jitter = true,
+    jitterFactor = 0.3,
+    cpuBound = true,
+    idempotencyKey = "unique-key",
+    compensationRetry = 3,
+    compensationTimeoutMs = 10000,
+    compensationCritical = true
+)
+public Mono<Result> complexStep(@Input Request request) {
+    return service.process(request);
+}
+```
 
-## 📄 License
+## Parameter Injection
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+Inject various parameters into step methods:
 
-## 🆘 Support
+```java
+@SagaStep(id = "multi-param-step")
+public Mono<Result> processStep(
+        @Input("orderId") String orderId,                    // Specific input field
+        @Input OrderRequest fullRequest,                     // Full input object
+        @FromStep("previous-step") PreviousResult previous,  // Result from another step
+        @Header("X-Correlation-Id") String correlationId,   // Single header
+        @Headers Map<String, String> allHeaders,            // All headers
+        @Variable("customVar") String variable,             // Custom variable
+        SagaContext context) {                              // Full context
+    return service.process(orderId, previous, correlationId);
+}
+```
 
-- **Documentation**: [Full documentation](docs/)
+## Compensation
+
+### In-Class Compensation
+
+```java
+@SagaStep(id = "reserve-funds", compensate = "releaseFunds")
+public Mono<ReservationId> reserveFunds(@Input ReserveRequest request) {
+    return fundService.reserve(request);
+}
+
+public Mono<Void> releaseFunds(@FromStep("reserve-funds") ReservationId id) {
+    return fundService.release(id);
+}
+```
+
+### External Compensation
+
+```java
+@Component
+public class CompensationHandlers {
+    
+    @CompensationSagaStep(saga = "payment-saga", forStepId = "reserve-funds")
+    public Mono<Void> releaseReservedFunds(
+            @FromStep("reserve-funds") ReservationId id,
+            SagaContext context) {
+        return fundService.release(id);
+    }
+}
+```
+
+### Compensation Policies
+
+```java
+@Bean
+public SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events) {
+    return new SagaEngine(registry, events, 
+        CompensationPolicy.BEST_EFFORT_PARALLEL);
+}
+```
+
+Available policies:
+- `STRICT_SEQUENTIAL`: Compensate in reverse order
+- `GROUPED_PARALLEL`: Compensate by dependency layers
+- `RETRY_WITH_BACKOFF`: Retry failed compensations
+- `CIRCUIT_BREAKER`: Skip compensation after threshold
+- `BEST_EFFORT_PARALLEL`: Parallel compensation, continue on errors
+
+## Execution
+
+### Basic Execution
+
+```java
+// By saga name
+Mono<SagaResult> result = sagaEngine.execute("payment-saga", 
+    StepInputs.of("orderId", "12345"));
+
+// By saga class
+Mono<SagaResult> result = sagaEngine.execute(PaymentSaga.class, 
+    StepInputs.of("orderId", "12345"));
+
+// By method reference
+Mono<SagaResult> result = sagaEngine.execute(PaymentSaga::validate, 
+    StepInputs.of("orderId", "12345"));
+```
+
+### Advanced Input Building
+
+```java
+StepInputs inputs = StepInputs.builder()
+    .forStepId("validate", paymentRequest)
+    .forStep(PaymentSaga::process, processData)
+    .forStepId("notify", ctx -> ctx.getResult("process"))  // Lazy resolver
+    .build();
+
+Mono<SagaResult> result = sagaEngine.execute("payment-saga", inputs);
+```
+
+### Custom Context
+
+```java
+SagaContext context = new SagaContext("correlation-123");
+context.setHeader("X-User-Id", "user-456");
+context.setVariable("region", "us-east-1");
+
+Mono<SagaResult> result = sagaEngine.execute("payment-saga", inputs, context);
+```
+
+## Event Publishing
+
+Implement custom event publishing for integration with messaging systems:
+
+```java
+@Component
+public class KafkaStepEventPublisher implements StepEventPublisher {
+    
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    
+    @Override
+    public Mono<Void> publish(StepEventEnvelope event) {
+        return Mono.fromFuture(
+            kafkaTemplate.send("saga-events", event.getStepId(), event)
+        ).then();
+    }
+}
+```
+
+Configure step events on individual steps:
+
+```java
+@SagaStep(id = "important-step")
+@StepEvent(topic = "payment-events", eventType = "PAYMENT_PROCESSED")
+public Mono<PaymentResult> processPayment(@Input PaymentRequest request) {
+    return paymentService.process(request);
+}
+```
+
+## HTTP Integration
+
+Built-in HTTP utilities for external service calls:
+
+```java
+@SagaStep(id = "call-external-service")
+public Mono<ExternalResult> callExternalService(
+        @Input ExternalRequest request, 
+        SagaContext context) {
+    
+    return HttpCall.exchangeOrError(
+        webClient.post().uri("/external/api").bodyValue(request),
+        context,
+        ExternalResult.class,
+        ErrorResponse.class,
+        (status, error) -> new ExternalServiceException(status, error.getMessage())
+    );
+}
+```
+
+Header propagation:
+
+```java
+return HttpCall.propagate(
+    webClient.get().uri("/service"), 
+    context,
+    Map.of("X-Custom-Header", "value")
+).retrieve().bodyToMono(Result.class);
+```
+
+## Observability
+
+### Custom Event Handlers
+
+```java
+@Component
+public class CustomSagaEvents implements SagaEvents {
+    
+    @Override
+    public void onStart(String sagaName, String sagaId) {
+        log.info("Saga {} started with ID {}", sagaName, sagaId);
+    }
+    
+    @Override
+    public void onStepSuccess(String sagaName, String sagaId, String stepId, 
+                             int attempts, long latencyMs) {
+        meterRegistry.counter("saga.step.success", 
+            "saga", sagaName, "step", stepId).increment();
+    }
+    
+    @Override
+    public void onStepFailed(String sagaName, String sagaId, String stepId, 
+                            Throwable error, int attempts, long latencyMs) {
+        log.error("Step {} failed in saga {}", stepId, sagaName, error);
+    }
+}
+```
+
+### Result Analysis
+
+```java
+SagaResult result = sagaEngine.execute("payment-saga", inputs).block();
+
+if (result.isSuccess()) {
+    PaymentResult payment = result.resultOf("process", PaymentResult.class)
+        .orElseThrow();
+    log.info("Payment processed: {}", payment.getId());
+} else {
+    List<String> failedSteps = result.failedSteps();
+    List<String> compensatedSteps = result.compensatedSteps();
+    log.error("Saga failed. Failed steps: {}, Compensated: {}", 
+        failedSteps, compensatedSteps);
+}
+```
+
+## Advanced Features
+
+### Step Expansion
+
+Dynamically generate steps for collections:
+
+```java
+List<OrderItem> items = Arrays.asList(
+    new OrderItem("item1"), 
+    new OrderItem("item2")
+);
+
+StepInputs inputs = StepInputs.builder()
+    .forStepId("process-items", ExpandEach.of(items)
+        .withIdSuffix(item -> ":" + item.getId()))
+    .build();
+```
+
+### Method References
+
+Type-safe saga execution:
+
+```java
+// Execute by method reference
+Mono<SagaResult> result = sagaEngine.execute(
+    PaymentSaga::validatePayment, 
+    StepInputs.of("orderId", "12345")
+);
+
+// Build inputs with method references
+StepInputs inputs = StepInputs.builder()
+    .forStep(PaymentSaga::validatePayment, paymentRequest)
+    .forStep(PaymentSaga::processPayment, processData)
+    .build();
+```
+
+### Variables and Context
+
+```java
+@SagaStep(id = "set-context")
+@SetVariable(name = "processedAt", value = "#{T(java.time.Instant).now()}")
+@SetVariable(name = "userId", fromHeader = "X-User-Id")
+public Mono<Result> processWithContext(@Variable("region") String region) {
+    return service.process(region);
+}
+```
+
+## License
+
+Licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+## Links
+
+- **GitHub**: [firefly-oss/lib-transactional-engine](https://github.com/firefly-oss/lib-transactional-engine)
 - **Issues**: [GitHub Issues](https://github.com/firefly-oss/lib-transactional-engine/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/firefly-oss/lib-transactional-engine/discussions)
 
 ---
 
-**Built with ❤️ by the Firefly Team**
+**Firefly Software Solutions Inc** - Building the future of banking technology
