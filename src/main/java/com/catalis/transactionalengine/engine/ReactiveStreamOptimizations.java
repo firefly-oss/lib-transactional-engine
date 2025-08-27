@@ -95,13 +95,18 @@ public class ReactiveStreamOptimizations {
                 sd.stepEvent.type,
                 sd.stepEvent.key,
                 payload,
-                context.headers()
+                context.headers(),
+                context.getAttempts(stepId),
+                context.getLatency(stepId),
+                context.getStepStartedAt(stepId),
+                Instant.now(),
+                null != context.getResult(stepId) ?  context.getResult(stepId).getClass().getName() : (payload != null ? payload.getClass().getName() : null)
             );
         })
         .flatMap(publisher::publish)
         .subscribeOn(Schedulers.boundedElastic()); // Offload to avoid blocking
     }
-    
+
     /**
      * Optimized layer execution with improved error handling and memory usage.
      * 

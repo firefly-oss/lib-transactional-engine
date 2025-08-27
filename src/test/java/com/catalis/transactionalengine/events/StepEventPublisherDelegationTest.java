@@ -117,19 +117,19 @@ class StepEventPublisherDelegationTest {
         assertEquals(2, publisher.publishedEvents.size());
         
         StepEventEnvelope event1 = publisher.publishedEvents.get(0);
-        assertEquals("TestSaga", event1.sagaName);
-        assertEquals("test-saga-1", event1.sagaId);
-        assertEquals("step1", event1.stepId);
-        assertEquals("test-topic", event1.topic);
-        assertEquals("STEP1_COMPLETED", event1.type);
-        assertEquals("test-key", event1.key);
-        assertEquals("result1", event1.payload);
-        assertEquals("test-tenant", event1.headers.get("tenant"));
+        assertEquals("TestSaga", event1.getSagaName());
+        assertEquals("test-saga-1", event1.getSagaId());
+        assertEquals("step1", event1.getStepId());
+        assertEquals("test-topic", event1.getTopic());
+        assertEquals("STEP1_COMPLETED", event1.getType());
+        assertEquals("test-key", event1.getKey());
+        assertEquals("result1", event1.getPayload());
+        assertEquals("test-tenant", event1.getHeaders().get("tenant"));
         
         StepEventEnvelope event2 = publisher.publishedEvents.get(1);
-        assertEquals("step2", event2.stepId);
-        assertEquals("STEP2_COMPLETED", event2.type);
-        assertEquals("result2:result1", event2.payload);
+        assertEquals("step2", event2.getStepId());
+        assertEquals("STEP2_COMPLETED", event2.getType());
+        assertEquals("result2:result1", event2.getPayload());
     }
 
     @Test

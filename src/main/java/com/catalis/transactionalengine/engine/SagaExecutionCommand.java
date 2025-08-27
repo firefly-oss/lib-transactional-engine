@@ -328,7 +328,12 @@ public class SagaExecutionCommand {
             stepDef.stepEvent.type,
             stepDef.stepEvent.key,
             payload,
-            context.headers()
+            context.headers(),
+            context.getAttempts(stepId),
+            context.getLatency(stepId),
+            context.getStepStartedAt(stepId),
+            Instant.now(),
+            null != context.getResult(stepId) ?  context.getResult(stepId).getClass().getName() : (payload != null ? payload.getClass().getName() : null)
         );
     }
     
