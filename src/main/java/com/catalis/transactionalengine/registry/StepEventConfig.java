@@ -14,8 +14,5 @@ public class StepEventConfig {
         this.type = type;
         this.key = key;
     }
-    
-    public boolean isEnabled() {
-        return topic != null && !topic.trim().isEmpty();
-    }
+
 }

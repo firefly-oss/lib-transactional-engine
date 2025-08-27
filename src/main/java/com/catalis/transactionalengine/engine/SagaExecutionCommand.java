@@ -306,7 +306,7 @@ public class SagaExecutionCommand {
     
     private Mono<Void> publishStepEventIfConfigured(SagaExecutionContext executionContext, String stepId) {
         StepDefinition stepDef = executionContext.workSaga().steps.get(stepId);
-        if (stepDef == null || stepDef.stepEvent == null || !stepDef.stepEvent.isEnabled()) {
+        if (stepDef == null || stepDef.stepEvent == null) {
             return Mono.empty();
         }
         

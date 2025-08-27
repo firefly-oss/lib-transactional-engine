@@ -81,7 +81,7 @@ public class ReactiveStreamOptimizations {
                                                  SagaContext context,
                                                  StepEventPublisher publisher) {
         StepDefinition sd = workSaga.steps.get(stepId);
-        if (sd == null || sd.stepEvent == null || !sd.stepEvent.isEnabled()) {
+        if (sd == null || sd.stepEvent == null) {
             return Mono.empty();
         }
         

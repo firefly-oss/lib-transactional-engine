@@ -17,7 +17,7 @@ import java.lang.annotation.*;
 public @interface StepEvent {
     
     /** Event destination (topic, queue, exchange, etc.) */
-    String topic();
+    String topic() default "";
     
     /** Event type identifier for consumers */
     String type() default "";
