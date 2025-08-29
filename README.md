@@ -34,7 +34,7 @@ A high-performance, reactive Saga orchestration engine designed for mission-crit
 
 ```xml
 <dependency>
-    <groupId>com.catalis</groupId>
+    <groupId>com.firefly</groupId>
     <artifactId>lib-transactional-engine</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
