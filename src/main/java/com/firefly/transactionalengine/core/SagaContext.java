@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Runtime context for a single Saga execution (in-memory only).
  * <p>
  * Holds per-execution data such as:
- * - Correlation id (UUID by default) and outbound headers to propagate (e.g., user id).
+ * - Correlation id (Long by default) and outbound headers to propagate (e.g., user id).
  * - A general-purpose variables store for cross-step data exchange.
  * - Step results, statuses, attempts, latencies, and per-step start timestamps.
  * - Compensation results and errors for post-mortem/observability reporting.
