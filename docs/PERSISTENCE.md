@@ -46,40 +46,42 @@ The Redis provider offers durable persistence with high performance:
 # application.yml
 firefly:
   saga:
-    persistence:
-      enabled: true
-      provider: redis
-      redis:
-        host: localhost
-        port: 6379
-        database: 0
-        password: ${REDIS_PASSWORD:}
-        key-prefix: "saga:"
-        key-ttl: PT24H
-        pool:
-          max-active: 8
-          max-idle: 8
-          min-idle: 0
-          max-wait: PT10S
+    engine:
+      persistence:
+        enabled: true
+        auto-recovery-enabled: true
+        max-saga-age: PT24H
+        cleanup-interval: PT1H
+        retention-period: P7D
+        redis:
+          host: localhost
+          port: 6379
+          database: 0
+          password: ${REDIS_PASSWORD:}
+          key-prefix: "firefly:saga:"
+          key-ttl: PT24H
+          connection-timeout: PT5S
+          command-timeout: PT10S
 ```
 
 ```java
 @Configuration
 public class SagaConfiguration {
-    
+
     @Bean
     public SagaEngine sagaEngine(
             SagaRegistry sagaRegistry,
-            SagaPersistenceProvider persistenceProvider) {
+            SagaPersistenceProvider persistenceProvider,
+            SagaEngineProperties properties) {
         return new SagaEngine(
             sagaRegistry,
             new SagaLoggerEvents(),
             SagaEngine.CompensationPolicy.STRICT_SEQUENTIAL,
-            null,
-            true,
-            null,
+            null, // No custom step event publisher
+            true, // Enable observability
+            null, // No custom validation service
             persistenceProvider,
-            true // Enable persistence
+            properties.getPersistence().isEnabled()
         );
     }
 }
@@ -99,14 +101,13 @@ public class SagaConfiguration {
 ```yaml
 firefly:
   saga:
-    persistence:
-      enabled: true                    # Enable persistence (default: true)
-      provider: redis                  # Provider type: in-memory, redis
-      recovery:
-        enabled: true                  # Enable automatic recovery (default: true)
-        startup-delay: PT30S           # Delay before recovery starts
-        stale-threshold: PT1H          # Threshold for identifying stale sagas
-        cleanup-interval: PT6H         # Interval for cleanup operations
+    engine:
+      persistence:
+        enabled: true                    # Enable persistence (default: false)
+        auto-recovery-enabled: true      # Enable automatic recovery (default: true)
+        max-saga-age: PT24H              # Maximum age before saga is considered stale
+        cleanup-interval: PT1H           # Interval for cleanup operations
+        retention-period: P7D            # How long to retain completed saga states
 ```
 
 ### Redis-Specific Configuration
@@ -114,20 +115,17 @@ firefly:
 ```yaml
 firefly:
   saga:
-    persistence:
-      redis:
-        host: localhost                # Redis host
-        port: 6379                     # Redis port
-        database: 0                    # Redis database number
-        password: ${REDIS_PASSWORD:}   # Redis password (optional)
-        timeout: PT5S                  # Connection timeout
-        key-prefix: "saga:"            # Key prefix for saga data
-        key-ttl: PT24H                 # TTL for saga keys
-        pool:
-          max-active: 8                # Maximum active connections
-          max-idle: 8                  # Maximum idle connections
-          min-idle: 0                  # Minimum idle connections
-          max-wait: PT10S              # Maximum wait time for connection
+    engine:
+      persistence:
+        redis:
+          host: localhost                # Redis host
+          port: 6379                     # Redis port
+          database: 0                    # Redis database number
+          password: ${REDIS_PASSWORD:}   # Redis password (optional)
+          connection-timeout: PT5S       # Connection timeout
+          command-timeout: PT10S         # Command timeout
+          key-prefix: "firefly:saga:"    # Key prefix for saga data
+          key-ttl: PT24H                 # TTL for saga keys (optional)
 ```
 
 ## Recovery Mechanisms
@@ -139,17 +137,18 @@ The recovery service automatically identifies and recovers in-flight sagas on ap
 ```java
 @Component
 public class SagaRecoveryManager {
-    
+
     private final SagaRecoveryService recoveryService;
-    
+
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
         recoveryService.recoverInFlightSagas()
             .subscribe(result -> {
-                log.info("Recovery completed: {} sagas found, {} recovered, {} failed",
+                log.info("Recovery completed: {} sagas found, {} recovered, {} failed, {} skipped",
                     result.getTotalFound(),
                     result.getRecovered(),
-                    result.getFailed());
+                    result.getFailed(),
+                    result.getSkipped());
             });
     }
 }
@@ -172,10 +171,10 @@ public class SagaAdminController {
     }
     
     @PostMapping("/recover/{correlationId}")
-    public Mono<SingleRecoveryResult> recoverSaga(@PathVariable String correlationId) {
+    public Mono<SagaRecoveryService.SingleRecoveryResult> recoverSaga(@PathVariable String correlationId) {
         return recoveryService.recoverSaga(correlationId);
     }
-    
+
     @PostMapping("/cleanup-stale")
     public Mono<Long> cleanupStaleSagas() {
         return recoveryService.cancelStaleSagas(Duration.ofHours(2));
@@ -192,14 +191,27 @@ Monitor persistence provider health:
 ```java
 @Component
 public class SagaHealthIndicator implements HealthIndicator {
-    
+
     private final SagaEngine sagaEngine;
-    
+
     @Override
     public Health health() {
-        return sagaEngine.isPersistenceHealthy()
-            .map(healthy -> healthy ? Health.up() : Health.down())
-            .block(Duration.ofSeconds(5));
+        try {
+            boolean healthy = sagaEngine.isPersistenceHealthy()
+                .block(Duration.ofSeconds(5));
+
+            return healthy ?
+                Health.up()
+                    .withDetail("provider", sagaEngine.getPersistenceProvider().getProviderType())
+                    .build() :
+                Health.down()
+                    .withDetail("reason", "Persistence provider is not healthy")
+                    .build();
+        } catch (Exception e) {
+            return Health.down()
+                .withDetail("error", e.getMessage())
+                .build();
+        }
     }
 }
 ```
@@ -231,24 +243,21 @@ For production environments:
 ```yaml
 firefly:
   saga:
-    persistence:
-      enabled: true
-      provider: redis
-      recovery:
+    engine:
+      persistence:
         enabled: true
-        startup-delay: PT60S           # Allow time for dependencies
-        stale-threshold: PT2H          # Conservative threshold
+        auto-recovery-enabled: true
+        max-saga-age: PT2H             # Conservative threshold
         cleanup-interval: PT12H        # Regular cleanup
-      redis:
-        host: redis-cluster.internal
-        port: 6379
-        database: 1                    # Dedicated database
-        key-prefix: "prod:saga:"       # Environment-specific prefix
-        key-ttl: PT72H                 # Longer retention
-        pool:
-          max-active: 20               # Higher connection pool
-          max-idle: 10
-          min-idle: 2
+        retention-period: P3D          # Retain for 3 days
+        redis:
+          host: redis-cluster.internal
+          port: 6379
+          database: 1                  # Dedicated database
+          key-prefix: "prod:saga:"     # Environment-specific prefix
+          key-ttl: PT72H               # Longer retention
+          connection-timeout: PT10S    # Longer timeout for production
+          command-timeout: PT30S
 ```
 
 ### 2. Error Handling
@@ -303,16 +312,31 @@ public class SagaMetrics {
 Use Testcontainers for integration testing:
 
 ```java
+@SpringBootTest
 @Testcontainers
 class SagaPersistenceIntegrationTest {
-    
+
     @Container
     static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
             .withExposedPorts(6379);
-    
+
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        registry.add("firefly.saga.engine.persistence.enabled", () -> "true");
+        registry.add("firefly.saga.engine.persistence.redis.host", redis::getHost);
+        registry.add("firefly.saga.engine.persistence.redis.port", redis::getFirstMappedPort);
+    }
+
     @Test
     void shouldPersistAndRecoverSaga() {
-        // Test implementation
+        // Test saga execution with persistence
+        SagaResult result = sagaEngine.execute("test-saga", StepInputs.empty()).block();
+        assertThat(result.isSuccess()).isTrue();
+
+        // Verify state is persisted
+        Optional<SagaExecutionState> persistedState = persistenceProvider
+            .getSagaState(result.getCorrelationId()).block();
+        assertThat(persistedState).isPresent();
     }
 }
 ```
@@ -343,8 +367,9 @@ Enable debug logging:
 ```yaml
 logging:
   level:
-    com.firefly.transactionalengine.persistence: DEBUG
-    com.firefly.transactionalengine.recovery: DEBUG
+    com.firefly.transactional.persistence: DEBUG
+    com.firefly.transactional.persistence.impl: DEBUG
+    com.firefly.transactional.config.SagaPersistenceAutoConfiguration: DEBUG
 ```
 
 ## Migration Guide

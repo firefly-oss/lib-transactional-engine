@@ -3,7 +3,8 @@
 A high-performance, reactive Saga orchestration engine designed for mission-critical Spring Boot 3 applications. Built for the modern cloud-native era, it provides enterprise-grade distributed transaction management with intelligent compensation strategies, comprehensive observability, and seamless integration with major cloud platforms.
 
 **Key Differentiators:**
-- **Zero-Persistence Design**: Pure in-memory execution with automatic context optimization
+- **Flexible Persistence**: In-memory by default with optional Redis persistence for production durability
+- **Automatic Recovery**: Built-in saga recovery mechanisms for application restarts
 - **Type-Safe API**: Method reference support with compile-time validation
 - **Cloud-Native**: Native integrations for AWS, Azure, and Google Cloud Platform
 - **Banking-Grade Reliability**: Built for the **Firefly OpenCore Banking Platform** by Firefly Software Solutions
@@ -14,6 +15,7 @@ A high-performance, reactive Saga orchestration engine designed for mission-crit
 
 - [Quick Start](#quick-start)
 - [Core Features](#core-features)
+- [Persistence and Recovery](#persistence-and-recovery)
 - [Saga Definition](#saga-definition)
   - [Annotation-Based Sagas](#annotation-based-sagas)
   - [External Steps](#external-steps)
@@ -28,6 +30,7 @@ A high-performance, reactive Saga orchestration engine designed for mission-crit
 - [Configuration](#configuration)
 - [Architectural Improvements](#architectural-improvements)
 - [Advanced Features](#advanced-features)
+- [Examples and Guides](#examples-and-guides)
 - [License](#license)
 
 ## Quick Start
@@ -108,6 +111,79 @@ public class OrderController {
 - **Method References**: Type-safe execution using Class::method syntax
 - **Automatic Optimization**: Context optimization for sequential vs concurrent execution
 - **Step Expansion**: Dynamic step generation with ExpandEach
+
+## Persistence and Recovery
+
+The Firefly Transactional Engine provides robust persistence and recovery capabilities for production environments:
+
+### In-Memory Persistence (Default)
+
+Zero-configuration operation with high performance:
+
+```java
+@SpringBootApplication
+@EnableTransactionalEngine
+public class Application {
+    // In-memory persistence is enabled by default
+    // Perfect for development and testing
+}
+```
+
+### Redis Persistence
+
+Production-ready persistence with automatic recovery:
+
+```yaml
+# application.yml
+firefly:
+  saga:
+    engine:
+      persistence:
+        enabled: true
+        auto-recovery-enabled: true
+        max-saga-age: PT24H
+        cleanup-interval: PT1H
+        retention-period: P7D
+        redis:
+          host: localhost
+          port: 6379
+          database: 0
+          key-prefix: "firefly:saga:"
+          key-ttl: PT24H
+          connection-timeout: PT5S
+          command-timeout: PT10S
+```
+
+```java
+@Component
+public class SagaRecoveryManager {
+
+    private final SagaRecoveryService recoveryService;
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void onApplicationReady() {
+        recoveryService.recoverInFlightSagas()
+            .subscribe(result ->
+                log.info("Recovery completed: {} sagas found, {} recovered, {} failed",
+                    result.getTotalFound(),
+                    result.getRecovered(),
+                    result.getFailed()));
+    }
+}
+```
+
+### Key Features
+
+- **Automatic State Persistence**: Saga state is automatically persisted at key checkpoints during execution
+- **Recovery on Startup**: In-flight sagas are automatically recovered after application restarts
+- **Stale Saga Detection**: Identifies and handles sagas that exceed the configured maximum age
+- **Health Monitoring**: Built-in health checks for persistence providers with Spring Boot Actuator integration
+- **Cleanup Operations**: Automatic cleanup of completed saga states based on retention policies
+- **Testcontainers Integration**: Full support for integration testing with Redis Testcontainers
+- **Backward Compatibility**: Serialization handles schema evolution gracefully
+
+For complete persistence documentation, see [PERSISTENCE.md](docs/PERSISTENCE.md).
+For configuration examples, see [EXAMPLES.md](docs/EXAMPLES.md).
 
 ## Saga Definition
 
@@ -427,10 +503,10 @@ The Saga Engine provides comprehensive configuration options through Spring Boot
 firefly:
   saga:
     engine:
-    compensation-policy: STRICT_SEQUENTIAL  # STRICT_SEQUENTIAL, BEST_EFFORT_PARALLEL
-    auto-optimization-enabled: true
-    default-timeout: PT5M  # 5 minutes
-    max-concurrent-sagas: 100
+      compensation-policy: STRICT_SEQUENTIAL  # STRICT_SEQUENTIAL, BEST_EFFORT_PARALLEL
+      auto-optimization-enabled: true
+      default-timeout: PT5M  # 5 minutes
+      max-concurrent-sagas: 100
 ```
 
 ### Context Configuration
@@ -439,9 +515,9 @@ firefly:
 firefly:
   saga:
     engine:
-    context:
-      execution-mode: AUTO  # AUTO, SEQUENTIAL, CONCURRENT, HIGH_PERFORMANCE, LOW_MEMORY
-      optimization-enabled: true
+      context:
+        execution-mode: AUTO  # AUTO, SEQUENTIAL, CONCURRENT, HIGH_PERFORMANCE, LOW_MEMORY
+        optimization-enabled: true
 ```
 
 ### Backpressure Configuration
@@ -450,11 +526,11 @@ firefly:
 firefly:
   saga:
     engine:
-    backpressure:
-      strategy: batched  # batched, adaptive, circuit-breaker
-      concurrency: 10
-      batch-size: 50
-      timeout: PT30S
+      backpressure:
+        strategy: batched  # batched, adaptive, circuit-breaker
+        concurrency: 10
+        batch-size: 50
+        timeout: PT30S
 ```
 
 ### Compensation Error Handling
@@ -463,11 +539,11 @@ firefly:
 firefly:
   saga:
     engine:
-    compensation:
-      error-handler: log-and-continue  # log-and-continue, fail-fast, retry, robust, strict, network-aware
-      max-retries: 3
-      retry-delay: PT0.1S
-      fail-fast-on-critical-errors: false
+      compensation:
+        error-handler: log-and-continue  # log-and-continue, fail-fast, retry, robust, strict, network-aware
+        max-retries: 3
+        retry-delay: PT0.1S
+        fail-fast-on-critical-errors: false
 ```
 
 ### Observability Configuration
@@ -476,11 +552,11 @@ firefly:
 firefly:
   saga:
     engine:
-    observability:
-      metrics-enabled: true
-      tracing-enabled: true
-      detailed-logging-enabled: false
-      metrics-interval: PT30S
+      observability:
+        metrics-enabled: true
+        tracing-enabled: true
+        detailed-logging-enabled: false
+        metrics-interval: PT30S
 ```
 
 ### Validation Configuration
@@ -489,11 +565,11 @@ firefly:
 firefly:
   saga:
     engine:
-    validation:
-      enabled: true
-      validate-at-startup: true
-      validate-inputs: true
-      fail-fast: true
+      validation:
+        enabled: true
+        validate-at-startup: true
+        validate-inputs: true
+        fail-fast: true
 ```
 
 ## Architectural Improvements

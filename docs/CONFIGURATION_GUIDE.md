@@ -8,6 +8,7 @@ This guide provides comprehensive information about configuring the Firefly Tran
 - [Context Configuration](#context-configuration)
 - [Backpressure Configuration](#backpressure-configuration)
 - [Compensation Configuration](#compensation-configuration)
+- [Persistence Configuration](#persistence-configuration)
 - [Observability Configuration](#observability-configuration)
 - [Validation Configuration](#validation-configuration)
 - [Environment-Specific Configurations](#environment-specific-configurations)
@@ -203,6 +204,81 @@ firefly:
       error-handler: network-aware
       max-retries: 5
       retry-delay: PT1S
+```
+
+## Persistence Configuration
+
+Configure saga state persistence and recovery:
+
+```yaml
+firefly:
+  saga:
+    engine:
+      persistence:
+        # Enable persistence for saga state
+        enabled: true                    # Default: false (in-memory only)
+
+        # Automatic recovery settings
+        auto-recovery-enabled: true      # Enable automatic recovery on startup
+        max-saga-age: PT24H              # Maximum age before saga is considered stale
+        cleanup-interval: PT1H           # Interval for cleanup operations
+        retention-period: P7D            # How long to retain completed saga states
+
+        # Redis-specific configuration
+        redis:
+          host: localhost                # Redis server host
+          port: 6379                     # Redis server port
+          database: 0                    # Redis database index
+          password: ${REDIS_PASSWORD:}   # Redis password (optional)
+          connection-timeout: PT5S       # Connection timeout
+          command-timeout: PT10S         # Command timeout
+          key-prefix: "firefly:saga:"    # Key prefix for saga data
+          key-ttl: PT24H                 # TTL for saga keys (optional)
+```
+
+### Persistence Providers
+
+#### In-Memory Provider (Default)
+Zero-configuration persistence for development:
+```yaml
+firefly:
+  saga:
+    engine:
+      persistence:
+        enabled: false  # Default - uses in-memory storage
+```
+
+#### Redis Provider
+Production-ready persistence with Redis:
+```yaml
+firefly:
+  saga:
+    engine:
+      persistence:
+        enabled: true
+        redis:
+          host: redis-cluster.internal
+          port: 6379
+          database: 1
+          key-prefix: "prod:saga:"
+          key-ttl: PT72H
+          connection-timeout: PT10S
+          command-timeout: PT30S
+```
+
+### Recovery Configuration
+
+Configure automatic saga recovery behavior:
+
+```yaml
+firefly:
+  saga:
+    engine:
+      persistence:
+        auto-recovery-enabled: true      # Enable automatic recovery
+        max-saga-age: PT2H               # Consider sagas stale after 2 hours
+        cleanup-interval: PT6H           # Run cleanup every 6 hours
+        retention-period: P3D            # Keep completed sagas for 3 days
 ```
 
 ## Observability Configuration

@@ -607,3 +607,91 @@ The architectural improvements provide performance benefits:
 - **Better Observability**: Comprehensive metrics with minimal overhead
 
 All improvements are designed to have minimal performance impact while providing significant benefits in maintainability and reliability.
+
+## 8. Saga Persistence and Recovery
+
+The engine now includes a comprehensive persistence layer for production durability:
+
+### Persistence Abstraction
+
+```java
+public interface SagaPersistenceProvider {
+    Mono<Void> persistSagaState(SagaExecutionState sagaState);
+    Mono<Optional<SagaExecutionState>> getSagaState(String correlationId);
+    Flux<SagaExecutionState> getInFlightSagas();
+    Flux<SagaExecutionState> getStaleSagas(Instant before);
+    Mono<Long> cleanupCompletedSagas(Duration olderThan);
+    Mono<Boolean> isHealthy();
+}
+```
+
+**Available Implementations:**
+- **InMemorySagaPersistenceProvider**: Default zero-persistence behavior
+- **RedisSagaPersistenceProvider**: Production-ready Redis persistence
+
+### Recovery Service
+
+```java
+public interface SagaRecoveryService {
+    Mono<RecoveryResult> recoverInFlightSagas();
+    Mono<SingleRecoveryResult> recoverSaga(String correlationId);
+    Flux<StaleSagaInfo> identifyStaleSagas(Duration staleThreshold);
+    Mono<Long> cancelStaleSagas(Duration maxAge);
+    Mono<ValidationResult> validatePersistedState();
+}
+```
+
+**Recovery Features:**
+- Automatic recovery on application startup
+- Stale saga detection and cleanup
+- State validation and integrity checks
+- Manual recovery capabilities
+
+### Auto-Configuration
+
+```java
+@AutoConfiguration
+@EnableConfigurationProperties(SagaEngineProperties.class)
+public class SagaPersistenceAutoConfiguration {
+
+    @Bean
+    @ConditionalOnProperty(name = "firefly.saga.engine.persistence.enabled", havingValue = "true")
+    public SagaPersistenceProvider redisSagaPersistenceProvider(
+            ReactiveRedisTemplate<String, byte[]> redisTemplate,
+            SagaStateSerializer serializer,
+            SagaEngineProperties properties) {
+        return new RedisSagaPersistenceProvider(redisTemplate, serializer,
+                properties.getPersistence().getRedis());
+    }
+}
+```
+
+**Configuration Benefits:**
+- Zero-configuration in-memory persistence by default
+- Automatic Redis persistence when enabled
+- Health checks and startup validation
+- Testcontainers integration for testing
+
+### Serialization
+
+```java
+public interface SagaStateSerializer {
+    byte[] serialize(SagaExecutionState state) throws SerializationException;
+    SagaExecutionState deserialize(byte[] data) throws SerializationException;
+}
+```
+
+**Features:**
+- JSON-based serialization with Jackson
+- Backward compatibility with schema evolution
+- Configurable ObjectMapper for custom serialization needs
+- Handles Java 8 time types and complex objects
+
+### Redis Key Structure
+
+The Redis implementation uses a structured key approach:
+- `{prefix}:state:{correlationId}` - Complete saga execution state
+- `{prefix}:metadata:{correlationId}` - Lightweight metadata for queries
+- `{prefix}:completed:{correlationId}` - Completion timestamp for cleanup
+
+This structure enables efficient queries while maintaining data integrity and supporting TTL-based cleanup.
