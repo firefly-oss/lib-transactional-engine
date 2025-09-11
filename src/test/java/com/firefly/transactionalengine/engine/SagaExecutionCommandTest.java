@@ -18,7 +18,6 @@
 package com.firefly.transactionalengine.engine;
 
 import com.firefly.transactionalengine.core.SagaContext;
-import com.firefly.transactionalengine.core.SagaResult;
 import com.firefly.transactionalengine.events.StepEventPublisher;
 import com.firefly.transactionalengine.observability.SagaEvents;
 import com.firefly.transactionalengine.registry.SagaDefinition;
