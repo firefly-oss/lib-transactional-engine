@@ -18,7 +18,9 @@
 package com.firefly.transactionalengine.engine;
 
 import com.firefly.transactionalengine.core.SagaContext;
-import com.firefly.transactionalengine.core.SagaResult;
+import com.firefly.transactionalengine.engine.backpressure.BackpressureConfig;
+import com.firefly.transactionalengine.engine.backpressure.BackpressureStrategy;
+import com.firefly.transactionalengine.engine.backpressure.BackpressureStrategyFactory;
 import com.firefly.transactionalengine.events.StepEventEnvelope;
 import com.firefly.transactionalengine.events.StepEventPublisher;
 import com.firefly.transactionalengine.registry.SagaDefinition;
@@ -32,7 +34,10 @@ import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.*;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -51,13 +56,43 @@ public class ReactiveStreamOptimizations {
     private static final Logger log = LoggerFactory.getLogger(ReactiveStreamOptimizations.class);
     
     /**
-     * Optimized step event publishing with backpressure control.
-     * 
-     * Improvements over original implementation:
-     * - Configurable concurrency to prevent overwhelming downstream systems
-     * - Batching support for high-throughput scenarios
-     * - Retry with backoff for transient failures
-     * - Memory-efficient streaming for large completion orders
+     * Optimized step event publishing with configurable backpressure strategies.
+     *
+     * @param completionOrder list of completed step IDs
+     * @param workSaga saga definition
+     * @param context saga context
+     * @param publisher step event publisher
+     * @param config backpressure configuration
+     * @param strategyName name of the backpressure strategy to use
+     */
+    public static Mono<Void> publishStepEventsWithBackpressure(
+            List<String> completionOrder,
+            SagaDefinition workSaga,
+            SagaContext context,
+            StepEventPublisher publisher,
+            BackpressureConfig config,
+            String strategyName) {
+
+        if (completionOrder.isEmpty()) {
+            return Mono.empty();
+        }
+
+        BackpressureStrategy strategy = BackpressureStrategyFactory.getStrategy(strategyName);
+
+        BackpressureStrategy.ItemProcessor<String, Void> processor = stepId ->
+            createStepEventMono(stepId, workSaga, context, publisher);
+
+        return strategy.applyBackpressure(completionOrder, processor, config)
+                .then()
+                .doOnSubscribe(s -> log.debug("Starting step event publishing for {} steps using {} strategy",
+                              completionOrder.size(), strategyName))
+                .doOnSuccess(v -> log.debug("Completed step event publishing"))
+                .doOnError(error -> log.error("Failed to publish step events: {}", error.getMessage()));
+    }
+
+    /**
+     * Optimized step event publishing with default batched backpressure strategy.
+     * Maintains backward compatibility with existing code.
      */
     public static Mono<Void> publishStepEventsWithBackpressure(
             List<String> completionOrder,
@@ -65,32 +100,8 @@ public class ReactiveStreamOptimizations {
             SagaContext context,
             StepEventPublisher publisher,
             BackpressureConfig config) {
-        
-        if (completionOrder.isEmpty()) {
-            return Mono.empty();
-        }
-        
-        return Flux.fromIterable(completionOrder)
-                // Control memory usage by processing in smaller chunks
-                .buffer(config.batchSize())
-                .flatMap(batch -> 
-                    Flux.fromIterable(batch)
-                        .flatMap(stepId -> createStepEventMono(stepId, workSaga, context, publisher)
-                                .onErrorResume(error -> {
-                                    log.warn("Failed to publish step event for step {}: {}", stepId, error.getMessage());
-                                    return Mono.empty(); // Continue with other events
-                                })
-                        , config.concurrency()) // Control concurrent event publishing
-                        .collectList()
-                        .then(),
-                    1) // Process batches sequentially to maintain order
-                .onErrorContinue((error, obj) -> 
-                    log.error("Error processing step event batch: {}", error.getMessage()))
-                .then()
-                .timeout(Duration.ofSeconds(config.timeoutSeconds()))
-                .doOnSubscribe(s -> log.debug("Starting step event publishing for {} steps", completionOrder.size()))
-                .doOnSuccess(v -> log.debug("Completed step event publishing"))
-                .doOnError(error -> log.error("Failed to publish step events: {}", error.getMessage()));
+
+        return publishStepEventsWithBackpressure(completionOrder, workSaga, context, publisher, config, "batched");
     }
     
     private static Mono<Void> createStepEventMono(String stepId, 
@@ -292,23 +303,6 @@ public class ReactiveStreamOptimizations {
     }
     
     // Configuration classes
-    public record BackpressureConfig(
-        int concurrency,
-        int batchSize,
-        int timeoutSeconds
-    ) {
-        public static BackpressureConfig defaultConfig() {
-            return new BackpressureConfig(10, 50, 30);
-        }
-        
-        public static BackpressureConfig highThroughput() {
-            return new BackpressureConfig(50, 100, 60);
-        }
-        
-        public static BackpressureConfig lowLatency() {
-            return new BackpressureConfig(5, 10, 10);
-        }
-    }
     
     public record ExecutionConfig(
         int maxLayerConcurrency,

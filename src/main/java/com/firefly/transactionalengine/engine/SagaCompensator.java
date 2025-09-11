@@ -19,13 +19,14 @@ package com.firefly.transactionalengine.engine;
 
 import com.firefly.transactionalengine.core.SagaContext;
 import com.firefly.transactionalengine.core.StepStatus;
+import com.firefly.transactionalengine.engine.compensation.CompensationErrorHandler;
+import com.firefly.transactionalengine.engine.compensation.CompensationErrorHandlerFactory;
 import com.firefly.transactionalengine.observability.SagaEvents;
 import com.firefly.transactionalengine.registry.SagaDefinition;
 import com.firefly.transactionalengine.registry.StepDefinition;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.*;
@@ -39,11 +40,17 @@ final class SagaCompensator {
     private final SagaEvents events;
     private final SagaEngine.CompensationPolicy policy;
     private final StepInvoker invoker;
+    private final CompensationErrorHandler errorHandler;
 
     SagaCompensator(SagaEvents events, SagaEngine.CompensationPolicy policy, StepInvoker invoker) {
+        this(events, policy, invoker, CompensationErrorHandlerFactory.defaultHandler());
+    }
+
+    SagaCompensator(SagaEvents events, SagaEngine.CompensationPolicy policy, StepInvoker invoker, CompensationErrorHandler errorHandler) {
         this.events = events;
         this.policy = policy;
         this.invoker = invoker;
+        this.errorHandler = errorHandler != null ? errorHandler : CompensationErrorHandlerFactory.defaultHandler();
     }
 
     Mono<Void> compensate(String sagaName, 
@@ -184,7 +191,7 @@ final class SagaCompensator {
         return call
                 .doOnNext(v -> ctx.putCompensationResult(stepId, v))
                 .thenReturn(true)
-                .onErrorResume(err -> { ctx.putCompensationError(stepId, err); return Mono.just(false); })
+                .onErrorResume(err -> handleCompensationError(stepId, err, ctx, sagaName, 1))
                 .doOnSuccess(ok -> {
                     if (Boolean.TRUE.equals(ok)) {
                         ctx.setStatus(stepId, StepStatus.COMPENSATED);
@@ -256,6 +263,34 @@ final class SagaCompensator {
                 .then();
     }
 
+    /**
+     * Handles compensation errors using the configured error handler.
+     */
+    private Mono<Boolean> handleCompensationError(String stepId, Throwable error, SagaContext ctx, String sagaName, int attempt) {
+        return errorHandler.handleError(stepId, error, ctx, attempt)
+                .flatMap(result -> {
+                    switch (result) {
+                        case CONTINUE:
+                            ctx.putCompensationError(stepId, error);
+                            return Mono.just(false);
+                        case RETRY:
+                            // For now, just continue - retry logic would need to be implemented at a higher level
+                            ctx.putCompensationError(stepId, error);
+                            return Mono.just(false);
+                        case FAIL_SAGA:
+                            return Mono.error(new CompensationFailedException("Compensation failed for step " + stepId, error));
+                        case SKIP_STEP:
+                            return Mono.just(true);
+                        case MARK_COMPENSATED:
+                            ctx.setStatus(stepId, StepStatus.COMPENSATED);
+                            return Mono.just(true);
+                        default:
+                            ctx.putCompensationError(stepId, error);
+                            return Mono.just(false);
+                    }
+                });
+    }
+
     private Object resolveCompensationArg(Method comp, Object input, Object result) {
         Class<?>[] params = comp.getParameterTypes();
         if (params.length == 0) return null;
@@ -263,5 +298,14 @@ final class SagaCompensator {
         if (input != null && t.isAssignableFrom(input.getClass())) return input;
         if (result != null && t.isAssignableFrom(result.getClass())) return result;
         return input != null ? input : result;
+    }
+
+    /**
+     * Exception thrown when compensation fails and the error handler decides to fail the saga.
+     */
+    public static class CompensationFailedException extends RuntimeException {
+        public CompensationFailedException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 }

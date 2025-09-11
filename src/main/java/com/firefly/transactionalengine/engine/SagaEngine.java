@@ -17,36 +17,22 @@
 
 package com.firefly.transactionalengine.engine;
 
-import com.firefly.transactionalengine.core.SagaContext;
-import com.firefly.transactionalengine.core.StepStatus;
-import com.firefly.transactionalengine.core.SagaResult;
-import com.firefly.transactionalengine.events.StepEventEnvelope;
-import com.firefly.transactionalengine.events.StepEventPublisher;
+import com.firefly.transactionalengine.annotations.Saga;
+import com.firefly.transactionalengine.core.*;
 import com.firefly.transactionalengine.events.NoOpStepEventPublisher;
+import com.firefly.transactionalengine.events.StepEventPublisher;
 import com.firefly.transactionalengine.observability.SagaEvents;
 import com.firefly.transactionalengine.registry.SagaDefinition;
 import com.firefly.transactionalengine.registry.SagaRegistry;
 import com.firefly.transactionalengine.registry.StepDefinition;
+import com.firefly.transactionalengine.tools.MethodRefs;
+import com.firefly.transactionalengine.validation.SagaValidationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.stream.Collectors;
-
-import com.firefly.transactionalengine.annotations.Saga;
-import com.firefly.transactionalengine.tools.MethodRefs;
-import com.firefly.transactionalengine.core.SagaOptimizationDetector;
-import com.firefly.transactionalengine.core.OptimizedSagaContext;
 
 /**
  * Core orchestrator that executes Sagas purely in-memory (no persistence).
@@ -62,9 +48,6 @@ import com.firefly.transactionalengine.core.OptimizedSagaContext;
  */
 public class SagaEngine {
 
-    // Argument resolver helper (extracts parameter binding + caches strategies)
-    private final SagaArgumentResolver argumentResolver = new SagaArgumentResolver();
-
     // Backward-compatible nested enum to preserve public API while using top-level type internally
     public enum CompensationPolicy {
         STRICT_SEQUENTIAL,
@@ -79,10 +62,11 @@ public class SagaEngine {
     private final SagaRegistry registry;
     private final SagaEvents events;
     private final CompensationPolicy policy;
-    private final StepInvoker invoker;
     private final SagaCompensator compensator;
     private final StepEventPublisher stepEventPublisher;
     private final boolean autoOptimizationEnabled;
+    private final SagaExecutionOrchestrator orchestrator;
+    private final SagaValidationService validationService;
 
     /**
          * Create a new SagaEngine.
@@ -113,13 +97,28 @@ public class SagaEngine {
      * @param autoOptimizationEnabled whether to automatically optimize SagaContext based on execution patterns
      */
     public SagaEngine(SagaRegistry registry, SagaEvents events, CompensationPolicy policy, StepEventPublisher stepEventPublisher, boolean autoOptimizationEnabled) {
+        this(registry, events, policy, stepEventPublisher, autoOptimizationEnabled, null);
+    }
+
+    /**
+     * Create a new SagaEngine with all configuration options including validation.
+     */
+    public SagaEngine(SagaRegistry registry, SagaEvents events, CompensationPolicy policy, StepEventPublisher stepEventPublisher, boolean autoOptimizationEnabled, SagaValidationService validationService) {
         this.registry = registry;
         this.events = events;
         this.policy = (policy != null ? policy : CompensationPolicy.STRICT_SEQUENTIAL);
-        this.invoker = new StepInvoker(argumentResolver);
-        this.compensator = new SagaCompensator(this.events, this.policy, this.invoker);
+        this.validationService = validationService;
+
+        // Create shared components
+        SagaArgumentResolver argumentResolver = new SagaArgumentResolver();
+        StepInvoker invoker = new StepInvoker(argumentResolver);
+
+        this.compensator = new SagaCompensator(this.events, this.policy, invoker);
         this.stepEventPublisher = (stepEventPublisher != null ? stepEventPublisher : new NoOpStepEventPublisher());
         this.autoOptimizationEnabled = autoOptimizationEnabled;
+
+        // Create the execution orchestrator
+        this.orchestrator = new SagaExecutionOrchestrator(invoker, this.events, this.stepEventPublisher);
     }
 
 
@@ -219,25 +218,106 @@ public class SagaEngine {
 
     public Mono<SagaResult> execute(SagaDefinition saga, StepInputs inputs, SagaContext ctx) {
         Objects.requireNonNull(saga, "saga");
+
+        // Validate saga definition and inputs if validation service is available
+        if (validationService != null) {
+            try {
+                validationService.validateSagaDefinitionOrThrow(saga);
+                validationService.validateSagaInputsOrThrow(saga, inputs);
+            } catch (SagaValidationService.SagaValidationException e) {
+                return Mono.error(e);
+            }
+        }
+
         // Auto-create context if not provided, with automatic optimization
-        final com.firefly.transactionalengine.core.SagaContext finalCtx = 
+        final com.firefly.transactionalengine.core.SagaContext finalCtx =
                 (ctx != null ? ctx : createOptimizedContextIfPossible(saga));
-        
+
         // Perform optional expansion first to maintain original behavior
         final Map<String, Object> overrideInputs = new LinkedHashMap<>();
         SagaDefinition workSaga = maybeExpandSaga(saga, inputs, overrideInputs, finalCtx);
-        
+
+        // Set saga name in context
+        finalCtx.setSagaName(workSaga.name);
+
         // Preserve topology logging functionality for compatibility
         SagaTopologyReporter.exposeAndLog(workSaga, finalCtx, log);
-        
-        // Use SagaExecutionCommand to handle all execution logic
-        SagaExecutionCommand command = new SagaExecutionCommand(
-            workSaga, inputs, finalCtx, events, stepEventPublisher, compensator, invoker, overrideInputs
-        );
-        
-        return command.execute();
+
+        // Use the orchestrator to handle execution
+        return orchestrator.orchestrate(workSaga, inputs, finalCtx, overrideInputs)
+                .flatMap(result -> handleExecutionResult(result, workSaga, inputs, overrideInputs));
     }
-    
+
+    /**
+     * Handles the execution result from the orchestrator, including compensation and event publishing.
+     */
+    private Mono<SagaResult> handleExecutionResult(SagaExecutionOrchestrator.ExecutionResult result,
+                                                  SagaDefinition workSaga,
+                                                  StepInputs inputs,
+                                                  Map<String, Object> overrideInputs) {
+        String sagaName = workSaga.name;
+        String sagaId = result.getContext().correlationId();
+        boolean success = !result.isFailed();
+
+        // Notify completion
+        events.onCompleted(sagaName, sagaId, success);
+
+        if (success) {
+            // Publish step events and return success result
+            return orchestrator.publishStepEvents(result.getCompletionOrder(), workSaga, result.getContext())
+                    .then(Mono.just(SagaResult.from(
+                        sagaName,
+                        result.getContext(),
+                        Map.of(), // No compensations on success
+                        result.getStepErrors(),
+                        workSaga.steps.keySet()
+                    )));
+        } else {
+            // Handle failure with compensation
+            Map<String, Object> materializedInputs = materializeInputs(inputs, overrideInputs, result.getContext());
+
+            return compensator.compensate(sagaName, workSaga, result.getCompletionOrder(), materializedInputs, result.getContext())
+                    .then(Mono.defer(() -> {
+                        Map<String, Boolean> compensated = extractCompensationFlags(result.getCompletionOrder(), result.getContext());
+                        return Mono.just(SagaResult.from(
+                            sagaName,
+                            result.getContext(),
+                            compensated,
+                            result.getStepErrors(),
+                            workSaga.steps.keySet()
+                        ));
+                    }));
+        }
+    }
+
+    /**
+     * Materializes step inputs for compensation.
+     */
+    private Map<String, Object> materializeInputs(StepInputs inputs, Map<String, Object> overrideInputs, SagaContext context) {
+        Map<String, Object> materialized = inputs != null ? inputs.materializedView(context) : Map.of();
+
+        if (!overrideInputs.isEmpty()) {
+            Map<String, Object> combined = new LinkedHashMap<>(materialized);
+            combined.putAll(overrideInputs);
+            return combined;
+        }
+
+        return materialized;
+    }
+
+    /**
+     * Extracts compensation flags from the context.
+     */
+    private Map<String, Boolean> extractCompensationFlags(List<String> completionOrder, SagaContext context) {
+        Map<String, Boolean> compensated = new HashMap<>();
+        for (String stepId : completionOrder) {
+            if (StepStatus.COMPENSATED.equals(context.getStatus(stepId))) {
+                compensated.put(stepId, true);
+            }
+        }
+        return compensated;
+    }
+
     /**
      * Creates an optimized SagaContext if the saga supports sequential execution,
      * otherwise creates a standard SagaContext for concurrent execution.
