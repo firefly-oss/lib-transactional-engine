@@ -20,13 +20,18 @@ package com.firefly.transactionalengine.observability;
 import com.firefly.transactionalengine.util.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /**
  * Default {@link SagaEvents} implementation that emits JSON-friendly key=value logs via SLF4J.
  * Enriched to include error class/message and compensation lifecycle.
+ * Also integrates with metrics collection for observability.
  */
 public class SagaLoggerEvents implements SagaEvents {
     private static final Logger log = LoggerFactory.getLogger(SagaLoggerEvents.class);
+
+    @Autowired(required = false)
+    private SagaMetricsCollector metricsCollector;
 
     @Override
     public void onStart(String sagaName, String sagaId) {
@@ -35,6 +40,10 @@ public class SagaLoggerEvents implements SagaEvents {
                 "saga", sagaName,
                 "sagaId", sagaId
         ));
+
+        if (metricsCollector != null) {
+            metricsCollector.recordSagaStarted(sagaName, sagaId);
+        }
     }
 
     @Override
@@ -67,6 +76,10 @@ public class SagaLoggerEvents implements SagaEvents {
                 "sagaId", sagaId,
                 "stepId", stepId
         ));
+
+        if (metricsCollector != null) {
+            metricsCollector.recordStepStarted(stepId, sagaName, sagaId);
+        }
     }
 
     @Override
@@ -79,6 +92,10 @@ public class SagaLoggerEvents implements SagaEvents {
                 "attempts", Integer.toString(attempts),
                 "latencyMs", Long.toString(latencyMs)
         ));
+
+        if (metricsCollector != null) {
+            metricsCollector.recordStepSucceeded(stepId, sagaName, sagaId);
+        }
     }
 
     @Override
@@ -95,6 +112,10 @@ public class SagaLoggerEvents implements SagaEvents {
                 "error_class", errClass,
                 "error_msg", errMsg
         ));
+
+        if (metricsCollector != null) {
+            metricsCollector.recordStepFailed(stepId, sagaName, sagaId, error);
+        }
     }
 
     @Override
@@ -109,6 +130,10 @@ public class SagaLoggerEvents implements SagaEvents {
                 "error_class", errClass,
                 "error_msg", errMsg
         ));
+
+        if (metricsCollector != null) {
+            metricsCollector.recordStepCompensated(stepId, sagaName, sagaId);
+        }
     }
 
     @Override
@@ -183,6 +208,14 @@ public class SagaLoggerEvents implements SagaEvents {
                 "sagaId", sagaId,
                 "success", Boolean.toString(success)
         ));
+
+        if (metricsCollector != null) {
+            if (success) {
+                metricsCollector.recordSagaCompleted(sagaName, sagaId, java.time.Duration.ZERO); // Duration will be calculated internally
+            } else {
+                metricsCollector.recordSagaFailed(sagaName, sagaId, new RuntimeException("Saga failed"));
+            }
+        }
     }
 
     private static String safeString(String s, int max) {

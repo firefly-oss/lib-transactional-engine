@@ -17,8 +17,6 @@
 
 package com.firefly.transactionalengine.observability;
 
-import com.firefly.transactionalengine.core.SagaContext;
-
 import java.util.List;
 
 /**
