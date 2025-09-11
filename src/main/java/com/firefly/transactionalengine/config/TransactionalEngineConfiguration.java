@@ -18,25 +18,25 @@
 package com.firefly.transactionalengine.config;
 
 import com.firefly.transactionalengine.aop.StepLoggingAspect;
+import com.firefly.transactionalengine.core.SagaContextFactory;
 import com.firefly.transactionalengine.engine.SagaEngine;
+import com.firefly.transactionalengine.events.NoOpStepEventPublisher;
+import com.firefly.transactionalengine.events.StepEventPublisher;
 import com.firefly.transactionalengine.observability.*;
 import com.firefly.transactionalengine.registry.SagaRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.web.reactive.function.client.WebClient;
-
-import com.firefly.transactionalengine.events.StepEventPublisher;
-import com.firefly.transactionalengine.events.NoOpStepEventPublisher;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -48,6 +48,7 @@ import java.util.Map;
  */
 @Configuration
 @EnableAspectJAutoProxy
+@EnableConfigurationProperties(SagaEngineProperties.class)
 public class TransactionalEngineConfiguration {
 
     @Bean
@@ -56,8 +57,26 @@ public class TransactionalEngineConfiguration {
     }
 
     @Bean
-    public SagaEngine sagaEngine(SagaRegistry registry, SagaEvents events, com.firefly.transactionalengine.events.StepEventPublisher publisher) {
-        return new SagaEngine(registry, events, publisher);
+    @ConditionalOnMissingBean
+    public SagaContextFactory sagaContextFactory(SagaEngineProperties properties) {
+        return new SagaContextFactory(
+            properties.getContext().isOptimizationEnabled(),
+            properties.getContext().getExecutionMode()
+        );
+    }
+
+    @Bean
+    public SagaEngine sagaEngine(SagaRegistry registry,
+                                SagaEvents events,
+                                com.firefly.transactionalengine.events.StepEventPublisher publisher,
+                                SagaEngineProperties properties) {
+        return new SagaEngine(
+            registry,
+            events,
+            properties.getCompensationPolicy(),
+            publisher,
+            properties.isAutoOptimizationEnabled()
+        );
     }
 
     @Bean
