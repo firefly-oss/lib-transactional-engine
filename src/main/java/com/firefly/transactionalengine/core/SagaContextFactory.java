@@ -22,111 +22,186 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Factory for creating SagaContext instances with automatic optimization.
- * 
- * <p>Automatically selects between OptimizedSagaContext (HashMap-based) and
- * standard SagaContext (ConcurrentHashMap-based) based on the saga's execution pattern:
+ * Factory for creating SagaContext instances with explicit execution mode support.
+ *
+ * <p>Provides multiple execution modes for different scenarios:
  * <ul>
- *   <li><b>Sequential execution:</b> All layers have single step → OptimizedSagaContext</li>
- *   <li><b>Concurrent execution:</b> Any layer has multiple steps → Standard SagaContext</li>
+ *   <li><b>SEQUENTIAL:</b> Single-threaded execution with optimized HashMap-based context</li>
+ *   <li><b>CONCURRENT:</b> Multi-threaded execution with thread-safe ConcurrentHashMap-based context</li>
+ *   <li><b>AUTO:</b> Automatically selects based on saga topology analysis</li>
+ *   <li><b>HIGH_PERFORMANCE:</b> Optimized for maximum throughput scenarios</li>
+ *   <li><b>LOW_MEMORY:</b> Optimized for memory-constrained environments</li>
  * </ul>
- * 
- * <p>This provides automatic performance optimization while maintaining thread safety.
+ *
+ * <p>This provides explicit control over context creation while maintaining backward compatibility.
  */
 public class SagaContextFactory {
     private static final Logger log = LoggerFactory.getLogger(SagaContextFactory.class);
-    
+
     private final boolean optimizationEnabled;
-    
+    private final ExecutionMode defaultMode;
+
     /**
-     * Creates a factory with optimization enabled by default.
+     * Execution modes for saga context creation.
      */
-    public SagaContextFactory() {
-        this(true);
+    public enum ExecutionMode {
+        /**
+         * Sequential execution mode - uses optimized HashMap-based context.
+         * Best for single-threaded sagas with no concurrent step execution.
+         */
+        SEQUENTIAL,
+
+        /**
+         * Concurrent execution mode - uses thread-safe ConcurrentHashMap-based context.
+         * Required for sagas with concurrent step execution within layers.
+         */
+        CONCURRENT,
+
+        /**
+         * Automatic mode - analyzes saga topology to choose optimal context type.
+         * Provides convenience while maintaining performance.
+         */
+        AUTO,
+
+        /**
+         * High performance mode - optimized for maximum throughput.
+         * Uses the most efficient context type available.
+         */
+        HIGH_PERFORMANCE,
+
+        /**
+         * Low memory mode - optimized for memory-constrained environments.
+         * Uses context implementations with minimal memory overhead.
+         */
+        LOW_MEMORY
     }
     
     /**
-     * Creates a factory with configurable optimization.
-     * 
+     * Creates a factory with optimization enabled and AUTO execution mode by default.
+     */
+    public SagaContextFactory() {
+        this(true, ExecutionMode.AUTO);
+    }
+
+    /**
+     * Creates a factory with configurable optimization and AUTO execution mode.
+     *
      * @param optimizationEnabled whether to enable automatic optimization
      */
     public SagaContextFactory(boolean optimizationEnabled) {
+        this(optimizationEnabled, ExecutionMode.AUTO);
+    }
+
+    /**
+     * Creates a factory with explicit execution mode.
+     *
+     * @param optimizationEnabled whether to enable automatic optimization
+     * @param defaultMode the default execution mode to use
+     */
+    public SagaContextFactory(boolean optimizationEnabled, ExecutionMode defaultMode) {
         this.optimizationEnabled = optimizationEnabled;
+        this.defaultMode = defaultMode != null ? defaultMode : ExecutionMode.AUTO;
     }
     
     /**
-     * Creates a new SagaContext with automatic optimization based on saga execution pattern.
-     * 
+     * Creates a new SagaContext using the default execution mode.
+     *
      * @param saga the saga definition to analyze for optimization potential
-     * @return OptimizedSagaContext for sequential execution, standard SagaContext for concurrent execution
+     * @return context optimized for the default execution mode
      */
     public SagaContext createContext(SagaDefinition saga) {
-        return createContext(saga, null, null);
+        return createContext(saga, null, null, defaultMode);
+    }
+
+    /**
+     * Creates a new SagaContext with explicit execution mode.
+     *
+     * @param saga the saga definition
+     * @param mode the execution mode to use
+     * @return context optimized for the specified execution mode
+     */
+    public SagaContext createContext(SagaDefinition saga, ExecutionMode mode) {
+        return createContext(saga, null, null, mode);
     }
     
     /**
-     * Creates a new SagaContext with the specified correlation ID and automatic optimization.
-     * 
+     * Creates a new SagaContext with the specified correlation ID using the default execution mode.
+     *
      * @param saga the saga definition to analyze for optimization potential
      * @param correlationId the correlation ID for the context
-     * @return OptimizedSagaContext for sequential execution, standard SagaContext for concurrent execution
+     * @return context optimized for the default execution mode
      */
     public SagaContext createContext(SagaDefinition saga, String correlationId) {
-        return createContext(saga, correlationId, null);
+        return createContext(saga, correlationId, null, defaultMode);
     }
-    
+
     /**
-     * Creates a new SagaContext with the specified correlation ID and saga name, with automatic optimization.
-     * 
+     * Creates a new SagaContext with the specified correlation ID and saga name using the default execution mode.
+     *
      * @param saga the saga definition to analyze for optimization potential
      * @param correlationId the correlation ID for the context
      * @param sagaName the saga name for the context (overrides saga definition name if provided)
-     * @return OptimizedSagaContext for sequential execution, standard SagaContext for concurrent execution
+     * @return context optimized for the default execution mode
      */
     public SagaContext createContext(SagaDefinition saga, String correlationId, String sagaName) {
-        if (!optimizationEnabled) {
-            // Optimization disabled - always use standard context
-            if (correlationId != null && sagaName != null) {
-                return new SagaContext(correlationId, sagaName);
-            } else if (correlationId != null) {
-                return new SagaContext(correlationId);
-            } else {
-                return new SagaContext();
-            }
-        }
-        
-        boolean canOptimize = SagaOptimizationDetector.canOptimize(saga);
+        return createContext(saga, correlationId, sagaName, defaultMode);
+    }
+
+    /**
+     * Creates a new SagaContext with explicit execution mode and all parameters.
+     *
+     * @param saga the saga definition to analyze for optimization potential
+     * @param correlationId the correlation ID for the context
+     * @param sagaName the saga name for the context (overrides saga definition name if provided)
+     * @param mode the execution mode to use
+     * @return context optimized for the specified execution mode
+     */
+    public SagaContext createContext(SagaDefinition saga, String correlationId, String sagaName, ExecutionMode mode) {
         String effectiveSagaName = sagaName != null ? sagaName : (saga != null ? saga.name : null);
-        
-        if (canOptimize) {
-            // Use optimized context for sequential execution
-            OptimizedSagaContext optimized = correlationId != null ? 
-                    new OptimizedSagaContext(correlationId, effectiveSagaName) :
-                    new OptimizedSagaContext();
-            
-            if (effectiveSagaName != null && correlationId == null) {
-                optimized.setSagaName(effectiveSagaName);
-            }
-            
-            log.debug("Using OptimizedSagaContext for sequential saga: {}", effectiveSagaName);
-            return optimized.toStandardContext(); // Return as SagaContext interface
-        } else {
-            // Use standard context for concurrent execution
-            SagaContext standard;
-            if (correlationId != null && effectiveSagaName != null) {
-                standard = new SagaContext(correlationId, effectiveSagaName);
-            } else if (correlationId != null) {
-                standard = new SagaContext(correlationId);
-            } else {
-                standard = new SagaContext();
-                if (effectiveSagaName != null) {
-                    standard.setSagaName(effectiveSagaName);
-                }
-            }
-            
-            log.debug("Using standard SagaContext for concurrent saga: {}", effectiveSagaName);
-            return standard;
+        ExecutionMode effectiveMode = mode != null ? mode : defaultMode;
+
+        // Determine the actual context type to create based on mode
+        ContextType contextType = determineContextType(saga, effectiveMode);
+
+        log.debug("Creating context for saga '{}' with mode {} -> type {}",
+                 effectiveSagaName, effectiveMode, contextType);
+
+        switch (contextType) {
+            case OPTIMIZED:
+                return createOptimizedContextInternal(correlationId, effectiveSagaName);
+            case STANDARD:
+            default:
+                return createStandardContextInternal(correlationId, effectiveSagaName);
         }
+    }
+
+    /**
+     * Determines the appropriate context type based on saga and execution mode.
+     */
+    private ContextType determineContextType(SagaDefinition saga, ExecutionMode mode) {
+        if (!optimizationEnabled) {
+            return ContextType.STANDARD;
+        }
+
+        switch (mode) {
+            case SEQUENTIAL:
+            case HIGH_PERFORMANCE:
+            case LOW_MEMORY:
+                return ContextType.OPTIMIZED;
+            case CONCURRENT:
+                return ContextType.STANDARD;
+            case AUTO:
+            default:
+                return SagaOptimizationDetector.canOptimize(saga) ? ContextType.OPTIMIZED : ContextType.STANDARD;
+        }
+    }
+
+    /**
+     * Internal context types.
+     */
+    private enum ContextType {
+        STANDARD,
+        OPTIMIZED
     }
     
     /**
@@ -165,8 +240,43 @@ public class SagaContextFactory {
         return optimizationEnabled;
     }
     
+    /**
+     * Gets the default execution mode for this factory.
+     */
+    public ExecutionMode getDefaultMode() {
+        return defaultMode;
+    }
+
+    /**
+     * Creates a factory configured for sequential execution.
+     */
+    public static SagaContextFactory forSequentialExecution() {
+        return new SagaContextFactory(true, ExecutionMode.SEQUENTIAL);
+    }
+
+    /**
+     * Creates a factory configured for concurrent execution.
+     */
+    public static SagaContextFactory forConcurrentExecution() {
+        return new SagaContextFactory(true, ExecutionMode.CONCURRENT);
+    }
+
+    /**
+     * Creates a factory configured for high performance scenarios.
+     */
+    public static SagaContextFactory forHighPerformance() {
+        return new SagaContextFactory(true, ExecutionMode.HIGH_PERFORMANCE);
+    }
+
+    /**
+     * Creates a factory configured for low memory scenarios.
+     */
+    public static SagaContextFactory forLowMemory() {
+        return new SagaContextFactory(true, ExecutionMode.LOW_MEMORY);
+    }
+
     // Helper methods
-    private SagaContext createStandardContext(String correlationId, String sagaName) {
+    private SagaContext createStandardContextInternal(String correlationId, String sagaName) {
         if (correlationId != null && sagaName != null) {
             return new SagaContext(correlationId, sagaName);
         } else if (correlationId != null) {
@@ -179,7 +289,27 @@ public class SagaContextFactory {
             return context;
         }
     }
-    
+
+    private SagaContext createOptimizedContextInternal(String correlationId, String sagaName) {
+        OptimizedSagaContext optimized;
+        if (correlationId != null && sagaName != null) {
+            optimized = new OptimizedSagaContext(correlationId, sagaName);
+        } else if (correlationId != null) {
+            optimized = new OptimizedSagaContext(correlationId);
+        } else {
+            optimized = new OptimizedSagaContext();
+            if (sagaName != null) {
+                optimized.setSagaName(sagaName);
+            }
+        }
+        return optimized.toStandardContext(); // Return as SagaContext interface
+    }
+
+    // Legacy helper methods for backward compatibility
+    private SagaContext createStandardContext(String correlationId, String sagaName) {
+        return createStandardContextInternal(correlationId, sagaName);
+    }
+
     private OptimizedSagaContext createOptimizedContext(String correlationId, String sagaName) {
         if (correlationId != null && sagaName != null) {
             return new OptimizedSagaContext(correlationId, sagaName);
