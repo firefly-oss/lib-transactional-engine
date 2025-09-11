@@ -1,0 +1,63 @@
+/*
+ * Copyright 2025 Firefly Software Solutions Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+
+package com.firefly.transactional.registry;
+
+import com.firefly.transactional.annotations.CompensationSagaStep;
+import com.firefly.transactional.annotations.Saga;
+import com.firefly.transactional.annotations.SagaStep;
+import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import reactor.core.publisher.Mono;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class ExternalCompensationPrecedenceRegistryTest {
+
+    @Configuration
+    static class AppConfig {
+        @Bean public Orchestrator orchestrator() { return new Orchestrator(); }
+        @Bean public CompensationSteps compensationSteps() { return new CompensationSteps(); }
+    }
+
+    @Saga(name = "PrecSaga")
+    static class Orchestrator {
+        @SagaStep(id = "a", compensate = "undoA")
+        public Mono<String> a() { return Mono.just("ok"); }
+        public Mono<Void> undoA(String res) { return Mono.empty(); }
+    }
+
+    static class CompensationSteps {
+        @CompensationSagaStep(saga = "PrecSaga", forStepId = "a")
+        public Mono<Void> externalUndoA(String res) { return Mono.empty(); }
+    }
+
+    @Test
+    void external_mapping_overrides_in_class_compensation() {
+        AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext(AppConfig.class);
+        try {
+            SagaRegistry reg = new SagaRegistry(ctx);
+            SagaDefinition def = reg.getSaga("PrecSaga");
+            StepDefinition sd = def.steps.get("a");
+            assertNotNull(sd);
+            assertEquals("externalUndoA", sd.compensateMethod.getName(), "External compensation should override in-class method");
+            assertSame(ctx.getBean(CompensationSteps.class), sd.compensateBean);
+        } finally { ctx.close(); }
+    }
+}
