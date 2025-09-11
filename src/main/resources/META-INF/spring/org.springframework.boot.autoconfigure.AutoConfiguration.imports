@@ -1,1 +1,1 @@
-com.firefly.transactionalengine.config.SagaPersistenceAutoConfiguration
+com.firefly.transactional.config.SagaPersistenceAutoConfiguration
