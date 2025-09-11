@@ -25,6 +25,8 @@ A high-performance, reactive Saga orchestration engine designed for mission-crit
 - [Event Publishing](#event-publishing)
 - [HTTP Integration](#http-integration)
 - [Observability](#observability)
+- [Configuration](#configuration)
+- [Architectural Improvements](#architectural-improvements)
 - [Advanced Features](#advanced-features)
 - [License](#license)
 
@@ -412,6 +414,227 @@ if (result.isSuccess()) {
     List<String> compensatedSteps = result.compensatedSteps();
     log.error("Saga failed. Failed steps: {}, Compensated: {}", 
         failedSteps, compensatedSteps);
+}
+```
+
+## Configuration
+
+The Saga Engine provides comprehensive configuration options through Spring Boot properties:
+
+### Basic Configuration
+
+```yaml
+firefly:
+  saga:
+    engine:
+    compensation-policy: STRICT_SEQUENTIAL  # STRICT_SEQUENTIAL, BEST_EFFORT_PARALLEL
+    auto-optimization-enabled: true
+    default-timeout: PT5M  # 5 minutes
+    max-concurrent-sagas: 100
+```
+
+### Context Configuration
+
+```yaml
+firefly:
+  saga:
+    engine:
+    context:
+      execution-mode: AUTO  # AUTO, SEQUENTIAL, CONCURRENT, HIGH_PERFORMANCE, LOW_MEMORY
+      optimization-enabled: true
+```
+
+### Backpressure Configuration
+
+```yaml
+firefly:
+  saga:
+    engine:
+    backpressure:
+      strategy: batched  # batched, adaptive, circuit-breaker
+      concurrency: 10
+      batch-size: 50
+      timeout: PT30S
+```
+
+### Compensation Error Handling
+
+```yaml
+firefly:
+  saga:
+    engine:
+    compensation:
+      error-handler: log-and-continue  # log-and-continue, fail-fast, retry, robust, strict, network-aware
+      max-retries: 3
+      retry-delay: PT0.1S
+      fail-fast-on-critical-errors: false
+```
+
+### Observability Configuration
+
+```yaml
+firefly:
+  saga:
+    engine:
+    observability:
+      metrics-enabled: true
+      tracing-enabled: true
+      detailed-logging-enabled: false
+      metrics-interval: PT30S
+```
+
+### Validation Configuration
+
+```yaml
+firefly:
+  saga:
+    engine:
+    validation:
+      enabled: true
+      validate-at-startup: true
+      validate-inputs: true
+      fail-fast: true
+```
+
+## Architectural Improvements
+
+The Saga Engine has been enhanced with several architectural improvements for better maintainability, performance, and reliability:
+
+### 1. Saga Execution Orchestrator
+
+The core execution logic has been extracted into a dedicated `SagaExecutionOrchestrator` component:
+
+```java
+@Component
+public class SagaExecutionOrchestrator {
+    public Mono<ExecutionResult> orchestrate(
+        SagaDefinition saga,
+        Map<String, Object> stepInputs,
+        SagaContext context
+    ) {
+        // Pure execution orchestration logic
+    }
+}
+```
+
+**Benefits:**
+- Separation of concerns between orchestration and engine management
+- Easier testing and maintenance
+- Cleaner code organization
+
+### 2. Pluggable Backpressure Strategies
+
+Reactive stream optimizations now use a strategy pattern:
+
+```java
+// Built-in strategies
+BackpressureStrategy batched = new BatchedBackpressureStrategy(config);
+BackpressureStrategy adaptive = new AdaptiveBackpressureStrategy(config);
+BackpressureStrategy circuitBreaker = new CircuitBreakerBackpressureStrategy(config);
+
+// Custom strategy
+BackpressureStrategy custom = new CustomBackpressureStrategy();
+BackpressureStrategyFactory.registerStrategy("custom", custom);
+```
+
+**Available Strategies:**
+- **Batched**: Groups items into batches for processing
+- **Adaptive**: Dynamically adjusts concurrency based on performance
+- **Circuit Breaker**: Implements circuit breaker pattern for fault tolerance
+
+### 3. Enhanced Compensation Error Handling
+
+Sophisticated error handling strategies for compensation operations:
+
+```java
+// Composite error handler with multiple strategies
+CompensationErrorHandler handler = CompositeCompensationErrorHandler.builder()
+    .failOn(IllegalStateException.class, SecurityException.class)
+    .retryOn(ConnectException.class, SocketTimeoutException.class)
+    .withFallback(new LogAndContinueErrorHandler())
+    .build();
+```
+
+**Error Handling Results:**
+- `CONTINUE`: Continue with next compensation step
+- `RETRY`: Retry the current compensation step
+- `FAIL_SAGA`: Fail the entire saga
+- `SKIP_STEP`: Skip current step and continue
+- `MARK_COMPENSATED`: Mark step as compensated and continue
+
+### 4. Optimized Context Creation
+
+Enhanced `SagaContextFactory` with explicit execution modes:
+
+```java
+// Factory methods for common scenarios
+SagaContext highPerformance = SagaContextFactory.createHighPerformance(sagaName);
+SagaContext lowMemory = SagaContextFactory.createLowMemory(sagaName);
+SagaContext concurrent = SagaContextFactory.createConcurrent(sagaName, 10);
+
+// Builder pattern for custom configuration
+SagaContext custom = SagaContextFactory.builder()
+    .sagaName("custom-saga")
+    .executionMode(ExecutionMode.HIGH_PERFORMANCE)
+    .optimizationEnabled(true)
+    .build();
+```
+
+### 5. Comprehensive Metrics Collection
+
+Advanced metrics collection with detailed saga and step tracking:
+
+```java
+@Component
+public class SagaMetricsCollector {
+    public void recordSagaStarted(String sagaName, String correlationId);
+    public void recordSagaCompleted(String sagaName, String correlationId, Duration executionTime);
+    public void recordStepStarted(String stepId, String sagaName, String correlationId);
+    public void recordBackpressureApplied(String strategy, int itemsProcessed);
+
+    public MetricsSnapshot getMetrics(); // Thread-safe snapshot
+}
+```
+
+**Available Metrics:**
+- Saga success/failure rates
+- Step execution statistics
+- Context optimization rates
+- Backpressure application counts
+- Execution time statistics
+
+### 6. Runtime Validation
+
+Comprehensive validation service for saga definitions and inputs:
+
+```java
+@Service
+public class SagaValidationService {
+    public ValidationResult validateSagaDefinition(SagaDefinition saga);
+    public ValidationResult validateSagaInputs(SagaDefinition saga, Object inputs);
+    public void validateAtStartup(); // Validates all registered sagas
+}
+```
+
+**Validation Features:**
+- Circular dependency detection
+- Step definition validation
+- Input validation
+- Startup validation with fail-fast options
+
+### 7. Spring Boot Actuator Integration
+
+Metrics endpoint for monitoring saga engine health:
+
+```java
+// Available at /actuator/saga-metrics
+@Component
+@Endpoint(id = "saga-metrics")
+public class SagaMetricsEndpoint {
+    @ReadOperation
+    public Map<String, Object> metrics() {
+        // Returns comprehensive metrics
+    }
 }
 ```
 
