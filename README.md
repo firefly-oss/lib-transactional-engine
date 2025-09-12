@@ -20,6 +20,9 @@ A high-performance, reactive Saga orchestration engine designed for mission-crit
   - [Annotation-Based Sagas](#annotation-based-sagas)
   - [External Steps](#external-steps)
   - [Programmatic Sagas](#programmatic-sagas)
+- [Saga Composition](#saga-composition)
+  - [Basic Composition](#basic-composition)
+  - [Advanced Composition Features](#advanced-composition-features)
 - [Step Configuration](#step-configuration)
 - [Parameter Injection](#parameter-injection)
 - [Compensation](#compensation)
@@ -259,6 +262,116 @@ public class SagaConfig {
     }
 }
 ```
+
+## Saga Composition
+
+The Saga Compositor enables orchestration of multiple sagas into coordinated workflows, providing higher-level business process automation with sophisticated dependency management and data flow.
+
+### Basic Composition
+
+```java
+@Service
+public class OrderFulfillmentService {
+
+    @Autowired
+    private SagaCompositor sagaCompositor;
+
+    public Mono<SagaCompositionResult> processOrder(OrderRequest request) {
+        SagaComposition composition = SagaCompositor.compose("order-fulfillment")
+            .compensationPolicy(CompensationPolicy.GROUPED_PARALLEL)
+
+            // Step 1: Process payment
+            .saga("payment-processing")
+                .withId("payment")
+                .withInput("orderId", request.getOrderId())
+                .withInput("amount", request.getAmount())
+                .add()
+
+            // Step 2: Reserve inventory (depends on payment)
+            .saga("inventory-reservation")
+                .withId("inventory")
+                .dependsOn("payment")
+                .withDataFrom("payment", "paymentId")
+                .add()
+
+            // Step 3: Parallel shipping and notifications
+            .saga("shipping-preparation")
+                .withId("shipping")
+                .dependsOn("inventory")
+                .executeInParallelWith("notifications")
+                .withDataFrom("inventory", "reservationId")
+                .add()
+
+            // Step 4: Send notifications (parallel with shipping)
+            .saga("notification-sending")
+                .withId("notifications")
+                .dependsOn("payment")
+                .withDataFrom("payment", "paymentId")
+                .optional() // Won't fail composition if it fails
+                .timeout(5000)
+                .add()
+
+            .build();
+
+        SagaContext context = new SagaContext(request.getCorrelationId());
+        return sagaCompositor.execute(composition, context);
+    }
+}
+```
+
+### Advanced Composition Features
+
+```java
+SagaComposition composition = SagaCompositor.compose("advanced-workflow")
+    .compensationPolicy(CompensationPolicy.RETRY_WITH_BACKOFF)
+
+    .saga("data-processing")
+        .withId("processor")
+        .add()
+
+    .saga("premium-features")
+        .withId("premium")
+        .dependsOn("processor")
+        // Conditional execution based on previous results
+        .executeIf(ctx -> {
+            SagaResult processorResult = ctx.getSagaResult("processor");
+            if (processorResult != null && processorResult.isSuccess()) {
+                Double amount = (Double) processorResult.getStepResult("process-data");
+                return amount != null && amount > 100.0;
+            }
+            return false;
+        })
+        // Data mapping from processor saga
+        .withDataFrom("processor", "amount", "premiumAmount")
+        .add()
+
+    .saga("audit-logging")
+        .dependsOn("processor")
+        .optional() // Non-critical saga
+        .add()
+
+    .build();
+
+// Execute and handle results
+sagaCompositor.execute(composition, context)
+    .doOnNext(result -> {
+        log.info("Composition completed: success={}, duration={}ms, completed={}",
+                result.isSuccess(), result.getDuration().toMillis(),
+                result.getCompletedSagaCount());
+
+        // Access shared data across sagas
+        Map<String, Object> sharedData = result.getSharedVariables();
+
+        // Check individual saga results
+        if (result.isSagaCompleted("premium")) {
+            SagaResult premiumResult = result.getSagaResult("premium");
+            // Process premium saga result
+        }
+    })
+    .subscribe();
+```
+
+For detailed composition patterns, data flow management, and best practices, see the [Saga Composition Guide](docs/SAGA_COMPOSITION.md).
 
 ## Step Configuration
 
