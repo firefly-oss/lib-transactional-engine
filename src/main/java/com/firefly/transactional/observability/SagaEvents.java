@@ -17,6 +17,8 @@
 
 package com.firefly.transactional.observability;
 
+import com.firefly.transactional.composition.SagaCompositionContext;
+
 import java.util.List;
 
 /**
@@ -46,4 +48,26 @@ public interface SagaEvents {
     default void onCompensationBatchCompleted(String sagaName, String sagaId, List<String> stepIds, boolean allSuccessful) {}
 
     default void onCompleted(String sagaName, String sagaId, boolean success) {}
+
+    // Composition-level events for saga compositions
+    /** Invoked when a saga composition starts execution. */
+    default void onCompositionStarted(String compositionName, String compositionId) {}
+    /** Optional: access to composition context on start for header propagation/tracing injection. */
+    default void onCompositionStarted(String compositionName, String compositionId, SagaCompositionContext ctx) {}
+    /** Invoked when a saga within a composition starts execution. */
+    default void onCompositionSagaStarted(String compositionName, String compositionId, String sagaId, String sagaName) {}
+    /** Invoked when a saga within a composition completes successfully. */
+    default void onCompositionSagaCompleted(String compositionName, String compositionId, String sagaId, String sagaName, long latencyMs) {}
+    /** Invoked when a saga within a composition fails. */
+    default void onCompositionSagaFailed(String compositionName, String compositionId, String sagaId, String sagaName, Throwable error, long latencyMs) {}
+    /** Invoked when a saga within a composition is skipped due to execution conditions. */
+    default void onCompositionSagaSkipped(String compositionName, String compositionId, String sagaId, String sagaName, String reason) {}
+    /** Invoked when a composition completes (successfully or with failures). */
+    default void onCompositionCompleted(String compositionName, String compositionId, boolean success, long latencyMs, int completedSagas, int failedSagas, int skippedSagas) {}
+    /** Invoked when a composition fails with a composition-level error. */
+    default void onCompositionFailed(String compositionName, String compositionId, Throwable error, long latencyMs) {}
+    /** Invoked when composition compensation starts. */
+    default void onCompositionCompensationStarted(String compositionName, String compositionId) {}
+    /** Invoked when composition compensation completes. */
+    default void onCompositionCompensationCompleted(String compositionName, String compositionId, boolean success) {}
 }
