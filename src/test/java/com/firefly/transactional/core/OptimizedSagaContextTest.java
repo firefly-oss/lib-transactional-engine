@@ -95,8 +95,8 @@ class OptimizedSagaContextTest {
         context.putHeader("X-Tenant-Id", "tenant-456");
         
         // Then
-        assertThat(context.getHeader("X-User-Id")).isEqualTo("user-123");
-        assertThat(context.getHeader("X-Tenant-Id")).isEqualTo("tenant-456");
+        assertThat(context.headers().get("X-User-Id")).isEqualTo("user-123");
+        assertThat(context.headers().get("X-Tenant-Id")).isEqualTo("tenant-456");
         assertThat(context.headers()).hasSize(2);
         assertThat(context.headers()).containsEntry("X-User-Id", "user-123");
         assertThat(context.headers()).containsEntry("X-Tenant-Id", "tenant-456");
