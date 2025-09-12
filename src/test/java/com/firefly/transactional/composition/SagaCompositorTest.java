@@ -23,6 +23,7 @@ import com.firefly.transactional.engine.SagaEngine;
 import com.firefly.transactional.engine.StepHandler;
 import com.firefly.transactional.engine.StepInputs;
 import com.firefly.transactional.observability.SagaEvents;
+import com.firefly.transactional.composition.CompositionValidationException;
 import com.firefly.transactional.registry.SagaBuilder;
 import com.firefly.transactional.registry.SagaDefinition;
 import com.firefly.transactional.registry.SagaRegistry;
@@ -286,7 +287,7 @@ class SagaCompositorTest {
     @Test
     void testCompositionValidation() {
         // Given: An invalid composition with circular dependencies
-        assertThrows(IllegalStateException.class, () -> {
+        CompositionValidationException exception = assertThrows(CompositionValidationException.class, () -> {
             SagaCompositor.compose("invalid-composition")
                     .saga("saga-a")
                         .dependsOn("saga-b")
@@ -296,6 +297,12 @@ class SagaCompositorTest {
                         .add()
                     .build();
         });
+
+        // Then: Verify the validation error details
+        assertTrue(exception.getMessage().contains("CIRCULAR_DEPENDENCY"));
+        assertTrue(exception.getMessage().contains("saga-a -> saga-b -> saga-a"));
+        assertEquals(1, exception.getValidationIssues().size());
+        assertEquals("CIRCULAR_DEPENDENCY", exception.getValidationIssues().get(0).getCode());
     }
     
     /**
