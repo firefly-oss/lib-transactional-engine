@@ -21,7 +21,6 @@ import com.firefly.transactional.persistence.SagaPersistenceProvider;
 import com.firefly.transactional.persistence.SagaRecoveryService;
 import com.firefly.transactional.persistence.impl.DefaultSagaRecoveryService;
 import com.firefly.transactional.persistence.impl.InMemorySagaPersistenceProvider;
-import com.firefly.transactional.persistence.impl.RedisSagaPersistenceProvider;
 import com.firefly.transactional.persistence.serialization.JsonSagaStateSerializer;
 import com.firefly.transactional.persistence.serialization.SagaStateSerializer;
 import com.firefly.transactional.engine.SagaEngine;
@@ -29,16 +28,11 @@ import com.firefly.transactional.registry.SagaRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.data.redis.serializer.RedisSerializationContext;
 
 /**
  * Auto-configuration for Saga persistence capabilities.
@@ -65,6 +59,7 @@ public class SagaPersistenceAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
+    @Primary
     public ObjectMapper sagaObjectMapper() {
         ObjectMapper mapper = new ObjectMapper();
         mapper.findAndRegisterModules(); // This will register JSR310 module for Java 8 time types
@@ -96,74 +91,6 @@ public class SagaPersistenceAutoConfiguration {
         return new InMemorySagaPersistenceProvider();
     }
 
-    /**
-     * Redis connection factory for saga persistence.
-     * Only created when Redis persistence is enabled and no custom connection factory is provided.
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnProperty(name = "firefly.saga.persistence.enabled", havingValue = "true")
-    @ConditionalOnClass(LettuceConnectionFactory.class)
-    public RedisConnectionFactory sagaRedisConnectionFactory(SagaEngineProperties properties) {
-        SagaEngineProperties.RedisProperties redis = properties.getPersistence().getRedis();
-        
-        log.info("Configuring Redis connection factory for saga persistence: {}:{}", 
-                redis.getHost(), redis.getPort());
-        
-        LettuceConnectionFactory factory = new LettuceConnectionFactory(redis.getHost(), redis.getPort());
-        factory.setDatabase(redis.getDatabase());
-        if (redis.getPassword() != null) {
-            factory.setPassword(redis.getPassword());
-        }
-        factory.setValidateConnection(true);
-        factory.afterPropertiesSet(); // Initialize the connection factory
-
-        return factory;
-    }
-
-    /**
-     * Reactive Redis template for saga persistence operations.
-     */
-    @Bean
-    @ConditionalOnMissingBean(name = "sagaReactiveRedisTemplate")
-    @ConditionalOnProperty(name = "firefly.saga.persistence.enabled", havingValue = "true")
-    @ConditionalOnClass(ReactiveRedisTemplate.class)
-    public ReactiveRedisTemplate<String, byte[]> sagaReactiveRedisTemplate(RedisConnectionFactory connectionFactory) {
-        log.debug("Configuring reactive Redis template for saga persistence");
-
-        RedisSerializationContext<String, byte[]> context = RedisSerializationContext
-                .<String, byte[]>newSerializationContext()
-                .key(RedisSerializationContext.SerializationPair.fromSerializer(
-                        new org.springframework.data.redis.serializer.StringRedisSerializer()))
-                .value(RedisSerializationContext.SerializationPair.fromSerializer(
-                        org.springframework.data.redis.serializer.RedisSerializer.byteArray()))
-                .hashKey(RedisSerializationContext.SerializationPair.fromSerializer(
-                        new org.springframework.data.redis.serializer.StringRedisSerializer()))
-                .hashValue(RedisSerializationContext.SerializationPair.fromSerializer(
-                        org.springframework.data.redis.serializer.RedisSerializer.byteArray()))
-                .build();
-
-        return new ReactiveRedisTemplate<String, byte[]>((LettuceConnectionFactory) connectionFactory, context);
-    }
-
-    /**
-     * Redis-based saga persistence provider.
-     * Only created when Redis persistence is explicitly enabled.
-     */
-    @Bean
-    @Primary
-    @ConditionalOnProperty(name = "firefly.saga.persistence.enabled", havingValue = "true")
-    @ConditionalOnClass(ReactiveRedisTemplate.class)
-    public SagaPersistenceProvider redisSagaPersistenceProvider(
-            ReactiveRedisTemplate<String, byte[]> redisTemplate,
-            SagaStateSerializer serializer,
-            SagaEngineProperties properties) {
-
-        SagaEngineProperties.RedisProperties redis = properties.getPersistence().getRedis();
-        log.info("Configuring Redis saga persistence provider with key prefix: {}", redis.getKeyPrefix());
-
-        return new RedisSagaPersistenceProvider(redisTemplate, serializer, redis);
-    }
 
     /**
      * Default saga recovery service.
