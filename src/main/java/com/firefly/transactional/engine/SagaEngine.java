@@ -531,8 +531,9 @@ public class SagaEngine {
         // Build topology layers for state tracking
         List<List<String>> layers = SagaTopology.buildLayers(saga);
 
-        // Convert step inputs to a serializable map (simplified for now)
-        Map<String, Object> stepInputsMap = Map.of();
+        // Materialize step inputs to a serializable map
+        // Use materializeAll to ensure all resolvers are evaluated and captured for recovery
+        Map<String, Object> stepInputsMap = inputs != null ? inputs.materializeAll(context) : Map.of();
 
         SagaExecutionState initialState = new SagaExecutionState.Builder()
                 .correlationId(correlationId)
