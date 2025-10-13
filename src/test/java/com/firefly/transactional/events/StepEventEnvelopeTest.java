@@ -17,6 +17,7 @@
 
 package com.firefly.transactional.events;
 
+import com.firefly.transactional.saga.events.StepEventEnvelope;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

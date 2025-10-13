@@ -16,10 +16,10 @@
 
 package com.firefly.transactional.it;
 
-import com.firefly.transactional.config.SagaEngineProperties;
-import com.firefly.transactional.core.SagaContextFactory;
-import com.firefly.transactional.engine.backpressure.BackpressureStrategyFactory;
-import com.firefly.transactional.engine.compensation.CompensationErrorHandlerFactory;
+import com.firefly.transactional.saga.core.SagaContextFactory;
+import com.firefly.transactional.saga.config.SagaEngineProperties;
+import com.firefly.transactional.shared.engine.backpressure.BackpressureStrategyFactory;
+import com.firefly.transactional.shared.engine.compensation.CompensationErrorHandlerFactory;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

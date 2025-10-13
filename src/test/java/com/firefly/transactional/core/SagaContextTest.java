@@ -15,8 +15,9 @@
  */
 
 
-package com.firefly.transactional.core;
+package com.firefly.transactional.saga.core;
 
+import com.firefly.transactional.shared.core.StepStatus;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;

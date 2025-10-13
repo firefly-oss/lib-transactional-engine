@@ -14,16 +14,17 @@
  * limitations under the License.
  */
 
-package com.firefly.transactional.composition;
+package com.firefly.transactional.saga.composition;
 
-import com.firefly.transactional.config.SagaCompositionProperties;
-import com.firefly.transactional.core.SagaContext;
-import com.firefly.transactional.registry.SagaDefinition;
-import com.firefly.transactional.core.SagaResult;
-import com.firefly.transactional.engine.SagaEngine;
-import com.firefly.transactional.engine.StepInputs;
-import com.firefly.transactional.observability.SagaEvents;
-import com.firefly.transactional.registry.SagaRegistry;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.saga.core.SagaResult;
+import com.firefly.transactional.saga.engine.SagaEngine;
+import com.firefly.transactional.saga.engine.StepInputs;
+import com.firefly.transactional.saga.registry.SagaDefinition;
+import com.firefly.transactional.saga.registry.SagaRegistry;
+import com.firefly.transactional.saga.config.SagaCompositionProperties;
+import com.firefly.transactional.saga.observability.SagaEvents;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -37,8 +38,8 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
 
 /**
@@ -68,8 +69,6 @@ class CompositionEnhancementsIntegrationTest {
     
     private SagaCompositor sagaCompositor;
     private CompositionTemplateRegistry templateRegistry;
-    private CompositionMetricsCollector metricsCollector;
-    private CompositionHealthIndicator healthIndicator;
     private CompositionVisualizationService visualizationService;
     private SagaCompositionProperties properties;
     
@@ -83,8 +82,6 @@ class CompositionEnhancementsIntegrationTest {
         // Setup components
         sagaCompositor = new SagaCompositor(sagaEngine, sagaRegistry, sagaEvents);
         templateRegistry = new CompositionTemplateRegistry(properties.getTemplates());
-        metricsCollector = new CompositionMetricsCollector(properties.getMetrics());
-        healthIndicator = new CompositionHealthIndicator(sagaCompositor, metricsCollector, properties.getHealth());
         visualizationService = new CompositionVisualizationService(sagaCompositor, properties.getDevTools());
         
         // Setup mock saga definitions (lenient to avoid unnecessary stubbing errors)
@@ -146,53 +143,27 @@ class CompositionEnhancementsIntegrationTest {
     }
     
     @Test
-    void testMetricsCollection() {
-        // Test that metrics are collected during composition execution
-        SagaComposition composition = SagaCompositor.compose("metrics-test")
+    void testCompositionExecution() {
+        // Test that composition execution works with the common observability layer
+        SagaComposition composition = SagaCompositor.compose("execution-test")
                 .saga("test-saga")
                     .withId("test")
                     .add()
                 .build();
-        
-        SagaContext context = new SagaContext("metrics-test");
-        
-        // Record composition start
-        metricsCollector.recordCompositionStarted("metrics-test", "comp-123");
-        
-        // Execute composition
+
+        SagaContext context = new SagaContext("execution-test");
+
+        // Execute composition - metrics will be handled by the common observability layer
         StepVerifier.create(sagaCompositor.execute(composition, context))
                 .assertNext(result -> {
-                    // Record completion
-                    metricsCollector.recordCompositionCompleted(
-                        "metrics-test", "comp-123", result.isSuccess(),
-                        result.getDuration(), result.getCompletedSagaCount(),
-                        result.getFailedSagaCount(), result.getSkippedSagaCount()
-                    );
-                    
-                    // Verify metrics
-                    CompositionMetricsSnapshot metrics = metricsCollector.getMetrics();
-                    assertEquals(1, metrics.getCompositionsStarted());
-                    assertEquals(1, metrics.getCompositionsCompleted());
-                    assertEquals(0, metrics.getCompositionsFailed());
-                    assertTrue(metrics.getCompositionSuccessRate() > 0.99);
+                    // Verify execution result
+                    assertTrue(result.isSuccess());
+                    assertEquals(1, result.getCompletedSagaCount());
+                    assertEquals(0, result.getFailedSagaCount());
+                    assertEquals(0, result.getSkippedSagaCount());
+                    assertNotNull(result.getDuration());
                 })
                 .verifyComplete();
-    }
-    
-    @Test
-    void testHealthIndicator() {
-        // Test health indicator with good metrics
-        metricsCollector.recordCompositionStarted("health-test", "comp-1");
-        metricsCollector.recordCompositionCompleted("health-test", "comp-1", true, 
-                Duration.ofSeconds(1), 1, 0, 0);
-        
-        var health = healthIndicator.health();
-        assertEquals("UP", health.getStatus().getCode());
-        
-        var details = health.getDetails();
-        assertNotNull(details.get("compositionsCompleted"));
-        assertNotNull(details.get("compositionSuccessRate"));
-        assertNotNull(details.get("healthChecks"));
     }
     
     @Test
@@ -249,46 +220,31 @@ class CompositionEnhancementsIntegrationTest {
     
     @Test
     void testCompleteWorkflow() {
-        // Test complete workflow using template, validation, metrics, and visualization
-        
+        // Test complete workflow using template, validation, and visualization
+
         // 1. Create composition from template
         SagaCompositionBuilder builder = templateRegistry.fromTemplate("order-processing", "complete-test");
-        
+
         // 2. Validate composition
         List<ValidationIssue> issues = builder.getValidationIssues();
         assertFalse(builder.hasErrors()); // Template should be valid
-        
+
         // 3. Build composition
         SagaComposition composition = builder.build();
-        
+
         // 4. Generate visualization
         String mermaid = visualizationService.generateMermaidDiagram(composition);
         assertNotNull(mermaid);
-        
-        // 5. Execute with metrics collection
+
+        // 5. Execute composition - metrics will be handled by the common observability layer
         SagaContext context = new SagaContext("complete-test");
-        
-        metricsCollector.recordCompositionStarted("complete-test", "comp-complete");
-        
+
         StepVerifier.create(sagaCompositor.execute(composition, context))
                 .assertNext(result -> {
-                    // 6. Record metrics
-                    metricsCollector.recordCompositionCompleted(
-                        "complete-test", "comp-complete", result.isSuccess(),
-                        result.getDuration(), result.getCompletedSagaCount(),
-                        result.getFailedSagaCount(), result.getSkippedSagaCount()
-                    );
-                    
-                    // 7. Check health
-                    var health = healthIndicator.health();
-                    assertEquals("UP", health.getStatus().getCode());
-                    
-                    // 8. Verify all components worked together
+                    // 6. Verify all components worked together
                     assertTrue(result.isSuccess());
                     assertTrue(result.getCompletedSagaCount() > 0);
-                    
-                    CompositionMetricsSnapshot metrics = metricsCollector.getMetrics();
-                    assertTrue(metrics.getCompositionSuccessRate() > 0.99);
+                    assertNotNull(result.getDuration());
                 })
                 .verifyComplete();
     }

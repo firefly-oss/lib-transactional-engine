@@ -16,12 +16,11 @@
 
 package com.firefly.transactional.persistence;
 
-import com.firefly.transactional.core.SagaContext;
-import com.firefly.transactional.core.StepStatus;
-import com.firefly.transactional.persistence.impl.InMemorySagaPersistenceProvider;
-import com.firefly.transactional.persistence.serialization.SerializableSagaContext;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.shared.core.StepStatus;
+import com.firefly.transactional.saga.persistence.impl.InMemorySagaPersistenceProvider;
+import com.firefly.transactional.saga.persistence.serialization.SerializableSagaContext;
 import org.junit.jupiter.api.Test;
-
 import reactor.test.StepVerifier;
 
 import java.time.Instant;

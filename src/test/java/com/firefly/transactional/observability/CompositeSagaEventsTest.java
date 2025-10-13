@@ -17,6 +17,8 @@
 
 package com.firefly.transactional.observability;
 
+import com.firefly.transactional.saga.observability.CompositeSagaEvents;
+import com.firefly.transactional.saga.observability.SagaEvents;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

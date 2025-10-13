@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-package com.firefly.transactional.engine.compensation;
+package com.firefly.transactional.saga.engine.compensation;
 
-import com.firefly.transactional.core.SagaContext;
-import org.junit.jupiter.api.Test;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.shared.engine.compensation.*;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
 import java.io.IOException;
@@ -26,7 +27,8 @@ import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.util.Set;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CompensationErrorHandlerTest {
 

@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-package com.firefly.transactional.composition;
+package com.firefly.transactional.saga.composition;
 
-import com.firefly.transactional.engine.CompensationPolicy;
-import com.firefly.transactional.engine.StepInputs;
-import com.firefly.transactional.registry.SagaBuilder;
-import com.firefly.transactional.registry.SagaDefinition;
-import com.firefly.transactional.registry.SagaRegistry;
+import com.firefly.transactional.saga.engine.StepInputs;
+import com.firefly.transactional.saga.registry.SagaBuilder;
+import com.firefly.transactional.saga.registry.SagaDefinition;
+import com.firefly.transactional.saga.registry.SagaRegistry;
+import com.firefly.transactional.shared.engine.CompensationPolicy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;

@@ -17,12 +17,18 @@
 
 package com.firefly.transactional.it;
 
-import com.firefly.transactional.annotations.*;
-import com.firefly.transactional.core.SagaContext;
-import com.firefly.transactional.core.SagaResult;
-import com.firefly.transactional.engine.SagaEngine;
-import com.firefly.transactional.engine.StepInputs;
-import com.firefly.transactional.registry.SagaRegistry;
+import com.firefly.transactional.saga.annotations.FromStep;
+import com.firefly.transactional.saga.annotations.Saga;
+import com.firefly.transactional.saga.annotations.SagaStep;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.saga.core.SagaResult;
+import com.firefly.transactional.saga.engine.SagaEngine;
+import com.firefly.transactional.saga.engine.StepInputs;
+import com.firefly.transactional.saga.registry.SagaRegistry;
+import com.firefly.transactional.shared.annotations.EnableTransactionalEngine;
+import com.firefly.transactional.shared.annotations.Header;
+import com.firefly.transactional.shared.annotations.Headers;
+import com.firefly.transactional.shared.annotations.Input;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;

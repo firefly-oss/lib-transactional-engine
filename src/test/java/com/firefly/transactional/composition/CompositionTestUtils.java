@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-package com.firefly.transactional.composition;
+package com.firefly.transactional.saga.composition;
 
-import com.firefly.transactional.core.SagaContext;
-import com.firefly.transactional.registry.SagaDefinition;
-import com.firefly.transactional.core.SagaResult;
-import com.firefly.transactional.engine.SagaEngine;
-import com.firefly.transactional.engine.StepInputs;
-import com.firefly.transactional.observability.SagaEvents;
-import com.firefly.transactional.registry.SagaRegistry;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.saga.core.SagaResult;
+import com.firefly.transactional.saga.engine.SagaEngine;
+import com.firefly.transactional.saga.engine.StepInputs;
+import com.firefly.transactional.saga.registry.SagaDefinition;
+import com.firefly.transactional.saga.registry.SagaRegistry;
+import com.firefly.transactional.saga.observability.SagaEvents;
 import org.mockito.Mockito;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -33,8 +33,8 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
 /**
  * Utility class for testing saga compositions.

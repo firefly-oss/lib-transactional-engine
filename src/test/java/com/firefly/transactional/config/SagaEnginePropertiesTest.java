@@ -16,14 +16,15 @@
 
 package com.firefly.transactional.config;
 
-import com.firefly.transactional.core.SagaContextFactory;
-import com.firefly.transactional.engine.SagaEngine;
-import org.junit.jupiter.api.Test;
+import com.firefly.transactional.saga.core.SagaContextFactory;
+import com.firefly.transactional.saga.engine.SagaEngine;
+import com.firefly.transactional.saga.config.SagaEngineProperties;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class SagaEnginePropertiesTest {
 

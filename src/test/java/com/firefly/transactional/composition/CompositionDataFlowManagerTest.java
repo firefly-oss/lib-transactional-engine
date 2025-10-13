@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-package com.firefly.transactional.composition;
+package com.firefly.transactional.saga.composition;
 
-import com.firefly.transactional.core.SagaContext;
-import com.firefly.transactional.core.SagaResult;
-import com.firefly.transactional.core.StepStatus;
-import com.firefly.transactional.engine.StepInputs;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.saga.core.SagaResult;
+import com.firefly.transactional.saga.engine.StepInputs;
+import com.firefly.transactional.shared.core.StepStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -28,7 +28,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * Tests for CompositionDataFlowManager.

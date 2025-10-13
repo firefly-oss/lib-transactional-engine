@@ -15,10 +15,10 @@
  */
 
 
-package com.firefly.transactional.core;
+package com.firefly.transactional.saga.core;
 
-import com.firefly.transactional.registry.SagaDefinition;
-import com.firefly.transactional.registry.StepDefinition;
+import com.firefly.transactional.saga.registry.SagaDefinition;
+import com.firefly.transactional.saga.registry.StepDefinition;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

@@ -16,24 +16,28 @@
 
 package com.firefly.transactional.persistence.integration;
 
-import com.firefly.transactional.annotations.EnableTransactionalEngine;
-import com.firefly.transactional.annotations.FromStep;
-import com.firefly.transactional.annotations.Saga;
-import com.firefly.transactional.annotations.SagaStep;
-import com.firefly.transactional.core.SagaContext;
-import com.firefly.transactional.core.StepStatus;
-import com.firefly.transactional.engine.SagaEngine;
-import com.firefly.transactional.persistence.SagaExecutionState;
-import com.firefly.transactional.persistence.SagaExecutionStatus;
-import com.firefly.transactional.persistence.SagaPersistenceProvider;
-import com.firefly.transactional.persistence.SagaRecoveryService;
+import com.firefly.transactional.saga.annotations.FromStep;
+import com.firefly.transactional.saga.annotations.Saga;
+import com.firefly.transactional.saga.annotations.SagaStep;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.saga.engine.SagaEngine;
+import com.firefly.transactional.shared.annotations.EnableTransactionalEngine;
+import com.firefly.transactional.shared.core.StepStatus;
+import com.firefly.transactional.saga.persistence.SagaExecutionState;
+import com.firefly.transactional.saga.persistence.SagaExecutionStatus;
+import com.firefly.transactional.saga.persistence.SagaPersistenceProvider;
+import com.firefly.transactional.saga.persistence.SagaRecoveryService;
+import com.firefly.transactional.saga.config.SagaPersistenceAutoConfiguration;
+import com.firefly.transactional.saga.config.SagaRedisAutoConfiguration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
@@ -60,12 +64,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * properly recovered and resumed.
  */
 @SpringBootTest(
+    classes = SagaRecoveryIntegrationTest.TestConfig.class,
     properties = {
         "spring.cloud.config.enabled=false",
         "spring.cloud.config.import-check.enabled=false"
     }
 )
-@ContextConfiguration(classes = SagaRecoveryIntegrationTest.TestConfig.class)
 @Testcontainers
 class SagaRecoveryIntegrationTest {
 
@@ -76,18 +80,17 @@ class SagaRecoveryIntegrationTest {
 
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
-        // Configure both property paths to ensure compatibility
-        registry.add("firefly.saga.persistence.enabled", () -> "true");
-        registry.add("firefly.saga.engine.persistence.enabled", () -> "true");
-        registry.add("firefly.saga.persistence.provider", () -> "redis");
-        registry.add("firefly.saga.persistence.redis.host", redis::getHost);
-        registry.add("firefly.saga.persistence.redis.port", redis::getFirstMappedPort);
-        registry.add("firefly.saga.persistence.redis.database", () -> "1");
-        registry.add("firefly.saga.persistence.redis.key-prefix", () -> "recovery:saga:");
-        registry.add("firefly.saga.persistence.redis.key-ttl", () -> "PT2H");
-        registry.add("firefly.saga.engine.persistence.auto-recovery-enabled", () -> "true");
-        registry.add("firefly.saga.engine.persistence.max-saga-age", () -> "PT10S"); // 10 seconds stale threshold
-        registry.add("firefly.saga.engine.persistence.cleanup-interval", () -> "PT1M");
+        // Configure new generic properties
+        registry.add("firefly.tx.persistence.enabled", () -> "true");
+        registry.add("firefly.tx.persistence.provider", () -> "redis");
+        registry.add("firefly.tx.persistence.redis.host", redis::getHost);
+        registry.add("firefly.tx.persistence.redis.port", redis::getFirstMappedPort);
+        registry.add("firefly.tx.persistence.redis.database", () -> "1");
+        registry.add("firefly.tx.persistence.redis.key-prefix", () -> "recovery:saga:");
+        registry.add("firefly.tx.persistence.redis.key-ttl", () -> "PT2H");
+        registry.add("firefly.tx.persistence.auto-recovery-enabled", () -> "true");
+        registry.add("firefly.tx.persistence.max-transaction-age", () -> "PT10S"); // 10 seconds stale threshold
+        registry.add("firefly.tx.persistence.cleanup-interval", () -> "PT1M");
 
         // Override Spring Data Redis properties to use the container
         registry.add("spring.data.redis.host", redis::getHost);
@@ -97,11 +100,12 @@ class SagaRecoveryIntegrationTest {
 
     @Configuration
     @EnableTransactionalEngine
+    @Import({SagaPersistenceAutoConfiguration.class, SagaRedisAutoConfiguration.class})
     static class TestConfig {
 
         @Bean
         @Primary
-        public org.springframework.data.redis.connection.RedisConnectionFactory redisConnectionFactory() {
+        public RedisConnectionFactory redisConnectionFactory() {
             LettuceConnectionFactory factory = new LettuceConnectionFactory(
                 redis.getHost(),
                 redis.getFirstMappedPort()

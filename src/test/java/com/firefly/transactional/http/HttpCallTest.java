@@ -17,7 +17,8 @@
 
 package com.firefly.transactional.http;
 
-import com.firefly.transactional.core.SagaContext;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.saga.http.HttpCall;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;

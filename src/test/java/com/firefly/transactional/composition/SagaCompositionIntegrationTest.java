@@ -14,17 +14,17 @@
  * limitations under the License.
  */
 
-package com.firefly.transactional.composition;
+package com.firefly.transactional.saga.composition;
 
-import com.firefly.transactional.core.SagaContext;
-import com.firefly.transactional.engine.CompensationPolicy;
-import com.firefly.transactional.engine.SagaEngine;
-import com.firefly.transactional.engine.StepHandler;
-import com.firefly.transactional.engine.StepInputs;
-import com.firefly.transactional.observability.SagaLoggerEvents;
-import com.firefly.transactional.registry.SagaBuilder;
-import com.firefly.transactional.registry.SagaDefinition;
-import com.firefly.transactional.registry.SagaRegistry;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.saga.engine.SagaEngine;
+import com.firefly.transactional.saga.engine.StepInputs;
+import com.firefly.transactional.saga.registry.SagaBuilder;
+import com.firefly.transactional.saga.registry.SagaDefinition;
+import com.firefly.transactional.saga.registry.SagaRegistry;
+import com.firefly.transactional.shared.engine.CompensationPolicy;
+import com.firefly.transactional.saga.engine.step.StepHandler;
+import com.firefly.transactional.saga.observability.SagaLoggerEvents;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -36,7 +36,6 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
@@ -288,8 +287,8 @@ class SagaCompositionIntegrationTest {
                 .verifyComplete();
     }
     
-    private com.firefly.transactional.core.SagaResult createSuccessfulResult(String sagaName, SagaContext context) {
-        return com.firefly.transactional.core.SagaResult.from(
+    private com.firefly.transactional.saga.core.SagaResult createSuccessfulResult(String sagaName, SagaContext context) {
+        return com.firefly.transactional.saga.core.SagaResult.from(
                 sagaName, context, java.util.Collections.emptyMap(), 
                 java.util.Collections.emptyMap(), java.util.Collections.emptyList());
     }

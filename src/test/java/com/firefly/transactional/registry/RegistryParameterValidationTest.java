@@ -15,12 +15,12 @@
  */
 
 
-package com.firefly.transactional.registry;
+package com.firefly.transactional.saga.registry;
 
-import com.firefly.transactional.annotations.FromStep;
-import com.firefly.transactional.annotations.Header;
-import com.firefly.transactional.annotations.Saga;
-import com.firefly.transactional.annotations.SagaStep;
+import com.firefly.transactional.saga.annotations.FromStep;
+import com.firefly.transactional.saga.annotations.Saga;
+import com.firefly.transactional.saga.annotations.SagaStep;
+import com.firefly.transactional.shared.annotations.Header;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;

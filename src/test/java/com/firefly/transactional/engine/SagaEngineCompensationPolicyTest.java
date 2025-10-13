@@ -15,14 +15,15 @@
  */
 
 
-package com.firefly.transactional.engine;
+package com.firefly.transactional.saga.engine;
 
-import com.firefly.transactional.core.SagaContext;
-import com.firefly.transactional.core.SagaResult;
-import com.firefly.transactional.observability.SagaEvents;
-import com.firefly.transactional.registry.SagaBuilder;
-import com.firefly.transactional.registry.SagaDefinition;
-import com.firefly.transactional.registry.SagaRegistry;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.saga.core.SagaResult;
+import com.firefly.transactional.saga.registry.SagaBuilder;
+import com.firefly.transactional.saga.registry.SagaDefinition;
+import com.firefly.transactional.saga.registry.SagaRegistry;
+import com.firefly.transactional.saga.engine.step.StepHandler;
+import com.firefly.transactional.saga.observability.SagaEvents;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 
@@ -39,16 +40,16 @@ class SagaEngineCompensationPolicyTest {
     void groupedParallelCompensationIsFasterThanSequential() {
         // Create three independent steps that will be compensated with delay when a dependent step fails
         StepHandler<Void, String> a = new StepHandler<Void, String>() {
-            @Override public Mono<String> execute(Void input, com.firefly.transactional.core.SagaContext ctx) { return Mono.just("ra"); }
-            @Override public Mono<Void> compensate(Object arg, com.firefly.transactional.core.SagaContext ctx) { return Mono.delay(Duration.ofMillis(200)).then(); }
+            @Override public Mono<String> execute(Void input, com.firefly.transactional.saga.core.SagaContext ctx) { return Mono.just("ra"); }
+            @Override public Mono<Void> compensate(Object arg, com.firefly.transactional.saga.core.SagaContext ctx) { return Mono.delay(Duration.ofMillis(200)).then(); }
         };
         StepHandler<Void, String> b = new StepHandler<Void, String>() {
-            @Override public Mono<String> execute(Void input, com.firefly.transactional.core.SagaContext ctx) { return Mono.just("rb"); }
-            @Override public Mono<Void> compensate(Object arg, com.firefly.transactional.core.SagaContext ctx) { return Mono.delay(Duration.ofMillis(200)).then(); }
+            @Override public Mono<String> execute(Void input, com.firefly.transactional.saga.core.SagaContext ctx) { return Mono.just("rb"); }
+            @Override public Mono<Void> compensate(Object arg, com.firefly.transactional.saga.core.SagaContext ctx) { return Mono.delay(Duration.ofMillis(200)).then(); }
         };
         StepHandler<Void, String> c = new StepHandler<Void, String>() {
-            @Override public Mono<String> execute(Void input, com.firefly.transactional.core.SagaContext ctx) { return Mono.just("rc"); }
-            @Override public Mono<Void> compensate(Object arg, com.firefly.transactional.core.SagaContext ctx) { return Mono.delay(Duration.ofMillis(200)).then(); }
+            @Override public Mono<String> execute(Void input, com.firefly.transactional.saga.core.SagaContext ctx) { return Mono.just("rc"); }
+            @Override public Mono<Void> compensate(Object arg, com.firefly.transactional.saga.core.SagaContext ctx) { return Mono.delay(Duration.ofMillis(200)).then(); }
         };
         StepHandler<Void, String> fail = (input, ctx) -> Mono.error(new RuntimeException("boom"));
 

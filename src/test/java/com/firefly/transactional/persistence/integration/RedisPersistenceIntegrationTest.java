@@ -16,21 +16,21 @@
 
 package com.firefly.transactional.persistence.integration;
 
-import com.firefly.transactional.annotations.EnableTransactionalEngine;
-import com.firefly.transactional.annotations.FromStep;
-import com.firefly.transactional.annotations.Saga;
-import com.firefly.transactional.annotations.SagaStep;
-import com.firefly.transactional.core.SagaContext;
-import com.firefly.transactional.core.StepStatus;
-import com.firefly.transactional.engine.SagaEngine;
-import com.firefly.transactional.engine.StepInputs;
-import com.firefly.transactional.persistence.SagaExecutionState;
-import com.firefly.transactional.persistence.SagaExecutionStatus;
-import com.firefly.transactional.persistence.SagaPersistenceProvider;
-import com.firefly.transactional.persistence.SagaRecoveryService;
+import com.firefly.transactional.saga.annotations.FromStep;
+import com.firefly.transactional.saga.annotations.Saga;
+import com.firefly.transactional.saga.annotations.SagaStep;
+import com.firefly.transactional.saga.core.SagaContext;
+import com.firefly.transactional.saga.engine.SagaEngine;
+import com.firefly.transactional.saga.engine.StepInputs;
+import com.firefly.transactional.shared.annotations.EnableTransactionalEngine;
+import com.firefly.transactional.shared.core.StepStatus;
+import com.firefly.transactional.saga.persistence.SagaExecutionState;
+import com.firefly.transactional.saga.persistence.SagaExecutionStatus;
+import com.firefly.transactional.saga.persistence.SagaPersistenceProvider;
+import com.firefly.transactional.saga.persistence.SagaRecoveryService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.junit.jupiter.api.BeforeEach;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -49,10 +49,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
-import java.util.concurrent.atomic.AtomicInteger;
-
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -62,12 +61,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with a real Redis instance running in a Docker container.
  */
 @SpringBootTest(
+    classes = RedisPersistenceIntegrationTest.TestConfig.class,
     properties = {
         "spring.cloud.config.enabled=false",
         "spring.cloud.config.import-check.enabled=false"
     }
 )
-@ContextConfiguration(classes = RedisPersistenceIntegrationTest.TestConfig.class)
 @Testcontainers
 class RedisPersistenceIntegrationTest {
 
@@ -78,17 +77,21 @@ class RedisPersistenceIntegrationTest {
 
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
-        // Configure both property paths to ensure compatibility
+        // Configure new generic properties
+        registry.add("firefly.tx.persistence.enabled", () -> "true");
+        registry.add("firefly.tx.persistence.provider", () -> "redis");
+        registry.add("firefly.tx.persistence.redis.host", redis::getHost);
+        registry.add("firefly.tx.persistence.redis.port", redis::getFirstMappedPort);
+        registry.add("firefly.tx.persistence.redis.database", () -> "0");
+        registry.add("firefly.tx.persistence.redis.key-prefix", () -> "test:tx:");
+        registry.add("firefly.tx.persistence.redis.key-ttl", () -> "PT1H");
+        registry.add("firefly.tx.persistence.auto-recovery-enabled", () -> "true");
+        registry.add("firefly.tx.persistence.max-transaction-age", () -> "PT30S");
+
+        // Also configure legacy properties to test backward compatibility
         registry.add("firefly.saga.persistence.enabled", () -> "true");
         registry.add("firefly.saga.engine.persistence.enabled", () -> "true");
         registry.add("firefly.saga.persistence.provider", () -> "redis");
-        registry.add("firefly.saga.persistence.redis.host", redis::getHost);
-        registry.add("firefly.saga.persistence.redis.port", redis::getFirstMappedPort);
-        registry.add("firefly.saga.persistence.redis.database", () -> "0");
-        registry.add("firefly.saga.persistence.redis.key-prefix", () -> "test:saga:");
-        registry.add("firefly.saga.persistence.redis.key-ttl", () -> "PT1H");
-        registry.add("firefly.saga.persistence.recovery.enabled", () -> "true");
-        registry.add("firefly.saga.persistence.recovery.stale-threshold", () -> "PT30S");
 
         // Override Spring Data Redis properties to use the container
         registry.add("spring.data.redis.host", redis::getHost);
@@ -234,7 +237,12 @@ class RedisPersistenceIntegrationTest {
                 .assertNext(result -> {
                     assertThat(result.isSuccess()).isTrue();
                     assertThat(result.steps()).hasSize(3);
-                    assertThat(result.steps().keySet()).containsExactly("step1", "step2", "step3");
+                    // Check that all expected steps are present (order doesn't matter for this check)
+                    assertThat(result.steps().keySet()).containsExactlyInAnyOrder("step1", "step2", "step3");
+                    // Verify step results
+                    assertThat(result.resultOf("step1", String.class)).hasValue("step1-result");
+                    assertThat(result.resultOf("step2", String.class)).hasValue("step2-result-step1-result");
+                    assertThat(result.resultOf("step3", String.class)).hasValue("step3-result-step2-result-step1-result");
                 })
                 .verifyComplete();
 
