@@ -29,6 +29,7 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -235,13 +236,17 @@ public class DefaultSagaRecoveryService implements SagaRecoveryService {
 
             // Reconstruct the saga context
             SagaContext recoveredContext = state.toSagaContext();
-            
-            // Create step inputs for recovery (empty for now, could be enhanced)
-            StepInputs stepInputs = StepInputs.empty();
-            
+
+            // Reconstruct step inputs from persisted state
+            Map<String, Object> persistedInputs = state.getStepInputs();
+            StepInputs stepInputs = persistedInputs != null && !persistedInputs.isEmpty()
+                    ? StepInputs.of(persistedInputs)
+                    : StepInputs.empty();
+
             // Resume saga execution
-            log.info("Resuming saga execution: {} ({})", correlationId, sagaName);
-            
+            log.info("Resuming saga execution: {} ({}) with {} step inputs",
+                    correlationId, sagaName, persistedInputs != null ? persistedInputs.size() : 0);
+
             return sagaEngine.execute(sagaName, stepInputs, recoveredContext)
                     .map(result -> new SingleRecoveryResult(
                             correlationId,
