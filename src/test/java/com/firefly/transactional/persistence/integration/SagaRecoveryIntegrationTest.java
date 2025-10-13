@@ -101,7 +101,7 @@ class SagaRecoveryIntegrationTest {
 
         @Bean
         @Primary
-        public LettuceConnectionFactory redisConnectionFactory() {
+        public org.springframework.data.redis.connection.RedisConnectionFactory redisConnectionFactory() {
             LettuceConnectionFactory factory = new LettuceConnectionFactory(
                 redis.getHost(),
                 redis.getFirstMappedPort()
@@ -112,17 +112,16 @@ class SagaRecoveryIntegrationTest {
         }
 
         @Bean
-        @Primary
         public ReactiveRedisTemplate<String, String> reactiveRedisTemplate(LettuceConnectionFactory connectionFactory) {
             RedisSerializer<String> stringSerializer = RedisSerializer.string();
             RedisSerializationContext<String, String> serializationContext = RedisSerializationContext
                 .<String, String>newSerializationContext()
-                .key(stringSerializer)
-                .value(stringSerializer)
-                .hashKey(stringSerializer)
-                .hashValue(stringSerializer)
+                .key(RedisSerializationContext.SerializationPair.fromSerializer(stringSerializer))
+                .value(RedisSerializationContext.SerializationPair.fromSerializer(stringSerializer))
+                .hashKey(RedisSerializationContext.SerializationPair.fromSerializer(stringSerializer))
+                .hashValue(RedisSerializationContext.SerializationPair.fromSerializer(stringSerializer))
                 .build();
-            return new ReactiveRedisTemplate<>(connectionFactory, serializationContext);
+            return new ReactiveRedisTemplate<String, String>(connectionFactory, serializationContext);
         }
 
         @Bean

@@ -35,6 +35,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
@@ -101,7 +102,7 @@ class RedisPersistenceIntegrationTest {
 
         @Bean
         @Primary
-        public LettuceConnectionFactory redisConnectionFactory() {
+        public RedisConnectionFactory redisConnectionFactory() {
             LettuceConnectionFactory factory = new LettuceConnectionFactory(
                 redis.getHost(),
                 redis.getFirstMappedPort()
@@ -112,17 +113,16 @@ class RedisPersistenceIntegrationTest {
         }
 
         @Bean
-        @Primary
         public ReactiveRedisTemplate<String, String> reactiveRedisTemplate(LettuceConnectionFactory connectionFactory) {
             RedisSerializer<String> stringSerializer = RedisSerializer.string();
             RedisSerializationContext<String, String> serializationContext = RedisSerializationContext
                 .<String, String>newSerializationContext()
-                .key(stringSerializer)
-                .value(stringSerializer)
-                .hashKey(stringSerializer)
-                .hashValue(stringSerializer)
+                .key(RedisSerializationContext.SerializationPair.fromSerializer(stringSerializer))
+                .value(RedisSerializationContext.SerializationPair.fromSerializer(stringSerializer))
+                .hashKey(RedisSerializationContext.SerializationPair.fromSerializer(stringSerializer))
+                .hashValue(RedisSerializationContext.SerializationPair.fromSerializer(stringSerializer))
                 .build();
-            return new ReactiveRedisTemplate<>(connectionFactory, serializationContext);
+            return new ReactiveRedisTemplate<String, String>(connectionFactory, serializationContext);
         }
 
         @Bean
