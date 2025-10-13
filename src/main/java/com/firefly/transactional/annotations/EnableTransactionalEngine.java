@@ -19,6 +19,7 @@ package com.firefly.transactional.annotations;
 
 import com.firefly.transactional.config.TransactionalEngineConfiguration;
 import com.firefly.transactional.config.SagaPersistenceAutoConfiguration;
+import com.firefly.transactional.config.SagaRedisAutoConfiguration;
 import org.springframework.context.annotation.Import;
 
 import java.lang.annotation.*;
@@ -37,6 +38,6 @@ import java.lang.annotation.*;
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
 @Inherited
-@Import({TransactionalEngineConfiguration.class, SagaPersistenceAutoConfiguration.class})
+@Import({TransactionalEngineConfiguration.class, SagaPersistenceAutoConfiguration.class, SagaRedisAutoConfiguration.class})
 public @interface EnableTransactionalEngine {
 }
